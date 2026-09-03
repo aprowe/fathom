@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Lets the interface talk to the fathom render thread.","local":true,"windows":["main"],"permissions":["core:default"]}}

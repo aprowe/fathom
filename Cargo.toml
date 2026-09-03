@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/fathom-core", "crates/fathom-web", "apps/gravity"]
+members = ["crates/*", "apps/gravity", "apps/gravity/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

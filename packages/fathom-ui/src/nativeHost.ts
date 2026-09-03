@@ -43,12 +43,12 @@ export class NativeHost implements FathomHost {
     // window behind the webview is never seen. The stylesheet keys off this attribute.
     document.documentElement.setAttribute('data-fathom-host', 'native')
 
-    const reply = (await this.invoke('plugin:fathom|init')) as InitReply
+    const reply = (await this.invoke('fathom_init')) as InitReply
     this.byteLength = reply.paramByteLength
     this.info = reply.adapterInfo
 
     this.statsTimer = window.setInterval(() => {
-      void this.invoke('plugin:fathom|stats').then((s) => {
+      void this.invoke('fathom_stats').then((s) => {
         this.lastStats = s as FrameStats
       })
     }, STATS_INTERVAL_MS)
@@ -65,7 +65,7 @@ export class NativeHost implements FathomHost {
     const key = `${rect.x}|${rect.y}|${rect.width}|${rect.height}`
     if (key === this.lastRect) return
     this.lastRect = key
-    void this.invoke('plugin:fathom|set_viewport', {
+    void this.invoke('fathom_set_viewport', {
       rect: {
         x: Math.round(rect.x),
         y: Math.round(rect.y),
@@ -79,15 +79,15 @@ export class NativeHost implements FathomHost {
   writeParams(bytes: Uint8Array): void {
     // The block is a few dozen bytes; one small message a frame is cheaper than any
     // shared-memory scheme would be to maintain.
-    void this.invoke('plugin:fathom|write_params', { bytes: Array.from(bytes) })
+    void this.invoke('fathom_write_params', { bytes: Array.from(bytes) })
   }
 
   sendEvent(event: SimEvent): void {
-    void this.invoke('plugin:fathom|input', { json: JSON.stringify(event) })
+    void this.invoke('fathom_input', { json: JSON.stringify(event) })
   }
 
   command(name: string, args: Record<string, unknown> = {}): void {
-    void this.invoke('plugin:fathom|command', { name, args: JSON.stringify(args) })
+    void this.invoke('fathom_command', { name, args: JSON.stringify(args) })
   }
 
   frame(): void {
@@ -105,6 +105,6 @@ export class NativeHost implements FathomHost {
   destroy(): void {
     if (this.statsTimer !== null) window.clearInterval(this.statsTimer)
     this.statsTimer = null
-    void this.invoke('plugin:fathom|destroy')
+    void this.invoke('fathom_destroy')
   }
 }

@@ -40,6 +40,8 @@ fathom/
     fathom-native/               Tauri plugin: child-window surface, render thread, commands
   packages/
     fathom-ui/                   @fathom/ui — React runtime: SimViewport, Panel, controls, host shim
+                                 (consumed as source through a Vite alias, so editing a
+                                 control needs no build step)
   apps/
     gravity/
       Cargo.toml                 the sim crate (cdylib for wasm + rlib for native)
@@ -53,14 +55,26 @@ fathom/
 ### The app contract
 
 ```rust
-pub trait Simulation: 'static {
+pub trait App: Sized + 'static {
     fn describe() -> AppDescriptor;            // name + param schema + command list
-    fn init(gpu: &Gpu, cfg: &InitConfig) -> Self;
-    fn update(&mut self, ctx: &mut StepCtx);   // dt, params, input events
-    fn render(&mut self, ctx: &mut RenderCtx); // target texture, viewport rect, camera
-    fn command(&mut self, cmd: Command);       // reset, reseed, change N
+    fn setup(ctx: &mut SetupCtx<'_>) -> Self;
+    fn update(&mut self, ctx: &mut UpdateCtx<'_>);  // dt, time, params, camera
+    fn draw(&mut self, ctx: &mut DrawCtx<'_>);      // encoder, target, viewport, camera
+
+    // openFrameworks-shaped input callbacks; all default to doing nothing.
+    fn mouse_pressed(&mut self, e: &MouseEvent, ctx: &mut EventCtx<'_>) {}
+    fn mouse_dragged(&mut self, e: &MouseEvent, ctx: &mut EventCtx<'_>) {}
+    fn mouse_scrolled(&mut self, e: &ScrollEvent, ctx: &mut EventCtx<'_>) {}
+    fn key_pressed(&mut self, e: &KeyEvent, ctx: &mut EventCtx<'_>) {}
+    fn resized(&mut self, ctx: &mut EventCtx<'_>) {}
+    fn command(&mut self, ctx: &mut CommandCtx<'_>) {}
 }
 ```
+
+The lifecycle is `setup` / `update` / `draw` after openFrameworks: an app writes only the
+callbacks it cares about, and the framework owns everything else. Pan, zoom and the
+transport controls are handled by the runner before the app sees an event, so every app
+gets them for free.
 
 `Gpu` is a thin wrapper over `wgpu::Device`/`Queue` plus adapter limits. It is identical
 on both targets: wgpu's WebGPU backend *is* the browser path, so an app crate compiles
@@ -90,8 +104,12 @@ interface FathomHost {
 - **`WebHost`** wraps the `fathom-web` wasm class. `init` attaches a canvas to the
   element, requests an adapter, and starts a `requestAnimationFrame` loop.
 - **`NativeHost`** calls Tauri commands (`fathom_init`, `fathom_set_viewport`,
-  `fathom_write_params`, `fathom_event`, `fathom_command`, `fathom_stats`) exposed by
-  the `fathom-native` plugin, which owns a render thread driving the child window.
+  `fathom_write_params`, `fathom_input`, `fathom_command`, `fathom_stats`,
+  `fathom_destroy`) exported by `fathom-native`, which owns a render thread driving the
+  child window. These are registered as ordinary app commands rather than as a Tauri
+  plugin: a plugin would add a permissions manifest for no benefit, since the only caller
+  is the app's own interface. An app wires them up with
+  `.setup(fathom_native::setup::<MyApp>)` and `.invoke_handler(fathom_native::handlers!())`.
 
 Rejected alternatives: running the sim in a Worker on web too (uniform, but adds
 latency and OffscreenCanvas complexity to the target that did not need it); and no
@@ -224,8 +242,8 @@ No end-to-end tests this milestone.
    kit, `WebHost`. A trivial built-in sim (a clear-color that reacts to one slider)
    proves the loop before gravity exists.
 3. **Gravity** — the three passes, initial conditions, panel, interaction. Web only.
-4. **Native path** — `fathom-native` child window and Tauri plugin, `NativeHost`, and the
-   gravity app's `src-tauri` shell. The same panel code, unchanged.
+4. **Native path** — `fathom-native` child window and Tauri commands, `NativeHost`, and
+   the gravity app's `src-tauri` shell. The same panel code, unchanged.
 5. **Polish** — error surfaces, fps/ms readout, README with both run commands.
 
 ## Running it
