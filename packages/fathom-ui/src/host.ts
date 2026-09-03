@@ -21,6 +21,9 @@ export interface FathomHost {
   /** Tell the host where, and at what size, to render. */
   setViewport(rect: Rect, dpr: number): void
 
+  /** Size of the parameter block, so the interface can size its mirror to match. */
+  paramByteLength(): number
+
   writeParams(bytes: Uint8Array): void
   sendEvent(event: SimEvent): void
   command(name: string, args?: Record<string, unknown>): void
@@ -46,6 +49,9 @@ export interface WasmApp {
   paramByteLength(): number
   adapterInfo(): string
   setViewport(width: number, height: number, dpr: number): void
+  /** Size of the parameter block, so the interface can size its mirror to match. */
+  paramByteLength(): number
+
   writeParams(bytes: Uint8Array): void
   input(json: string): void
   command(name: string, args: string): void

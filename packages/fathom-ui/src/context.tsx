@@ -71,8 +71,7 @@ export function FathomProvider({ wasm, children }: { wasm: WasmLoader; children:
           host.destroy()
           return
         }
-        const byteLength = (host as unknown as { paramByteLength(): number }).paramByteLength()
-        const params = new ParamMirror(descriptor.params, byteLength)
+        const params = new ParamMirror(descriptor.params, host.paramByteLength())
         setPhase({ status: 'ready', host, descriptor, params })
       } catch (error) {
         if (!disposed) setPhase({ status: 'error', message: describe(error) })
@@ -158,6 +157,3 @@ function Failure({ message }: { message: string }) {
     </div>
   )
 }
-
-const CustomProvider = FathomProvider
-export { CustomProvider as Provider }
