@@ -1,0 +1,481 @@
+/*
+ * fathom interface chrome.
+ *
+ * The simulation is the only bright thing on screen, so the chrome is built like the
+ * casing of a measurement instrument rather than like an app: a cool slate ground,
+ * hairline separation instead of borders and cards, and sliders whose thumb is a needle
+ * on a scale. The accent is lifted from the simulation's own colour ramp, so the panel
+ * belongs to whatever it is controlling.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+:root {
+  --fathom-ground: #0e1116;
+  --fathom-panel: #121722;
+  --fathom-raised: #1a212c;
+  --fathom-line: #232c3a;
+  --fathom-text: #dce3ed;
+  --fathom-muted: #7c8899;
+  --fathom-accent: #6fd2ff;
+  --fathom-warm: #ffc98a;
+
+  --fathom-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --fathom-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--fathom-ground);
+  color: var(--fathom-text);
+  font-family: var(--fathom-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* Native: the webview floats over a wgpu child window, so everything the panel does not
+   cover has to be genuinely transparent. */
+[data-fathom-host='native'] body,
+[data-fathom-host='native'] .fathom-app,
+[data-fathom-host='native'] .fathom-viewport {
+  background: transparent;
+}
+
+/* Layout ------------------------------------------------------------------ */
+
+.fathom-app {
+  display: grid;
+  grid-template-columns: 1fr 296px;
+  height: 100%;
+  background: var(--fathom-ground);
+}
+
+.fathom-viewport {
+  position: relative;
+  overflow: hidden;
+  background: #05070b;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.fathom-surface,
+.fathom-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Panel ------------------------------------------------------------------- */
+
+.fathom-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--fathom-panel);
+  border-left: 1px solid var(--fathom-line);
+}
+
+.fathom-panel-head {
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid var(--fathom-line);
+}
+
+.fathom-panel-head h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.fathom-panel-head p {
+  margin: 3px 0 0;
+  color: var(--fathom-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fathom-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 18px 24px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--fathom-line) transparent;
+}
+
+.fathom-group {
+  padding: 16px 0 4px;
+}
+
+.fathom-group + .fathom-group {
+  border-top: 1px solid var(--fathom-line);
+}
+
+.fathom-group h2 {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fathom-muted);
+}
+
+/* Controls ---------------------------------------------------------------- */
+
+.fathom-control {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.fathom-control-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.fathom-control-label {
+  color: var(--fathom-text);
+}
+
+/* Tabular numerals so a value does not shift sideways as it changes. */
+.fathom-readout {
+  font-family: var(--fathom-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fathom-accent);
+}
+
+.fathom-slider input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: ew-resize;
+}
+
+.fathom-slider input[type='range']::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(
+    to right,
+    var(--fathom-accent) var(--fathom-fill, 0%),
+    var(--fathom-line) var(--fathom-fill, 0%)
+  );
+}
+
+/* A needle, not a knob: this is a scale being read, not a switch being thrown. */
+.fathom-slider input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 2px;
+  height: 14px;
+  margin-top: -6px;
+  border-radius: 1px;
+  background: var(--fathom-text);
+  transition: background 90ms linear;
+}
+
+.fathom-slider input[type='range']:hover::-webkit-slider-thumb,
+.fathom-slider input[type='range']:focus-visible::-webkit-slider-thumb {
+  background: var(--fathom-accent);
+}
+
+.fathom-slider input[type='range']::-moz-range-track {
+  height: 2px;
+  border-radius: 1px;
+  background: var(--fathom-line);
+}
+
+.fathom-slider input[type='range']::-moz-range-progress {
+  height: 2px;
+  border-radius: 1px;
+  background: var(--fathom-accent);
+}
+
+.fathom-slider input[type='range']::-moz-range-thumb {
+  width: 2px;
+  height: 14px;
+  border: 0;
+  border-radius: 1px;
+  background: var(--fathom-text);
+}
+
+.fathom-toggle,
+.fathom-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.fathom-switch {
+  flex: none;
+  width: 30px;
+  height: 16px;
+  padding: 2px;
+  border: 1px solid var(--fathom-line);
+  border-radius: 8px;
+  background: var(--fathom-raised);
+  cursor: pointer;
+}
+
+.fathom-switch-knob {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fathom-muted);
+  transition: transform 120ms ease, background 120ms linear;
+}
+
+.fathom-switch[aria-checked='true'] {
+  border-color: color-mix(in srgb, var(--fathom-accent) 45%, transparent);
+}
+
+.fathom-switch[aria-checked='true'] .fathom-switch-knob {
+  transform: translateX(14px);
+  background: var(--fathom-accent);
+}
+
+.fathom-choice select {
+  flex: 1;
+  max-width: 150px;
+  padding: 5px 8px;
+  border: 1px solid var(--fathom-line);
+  border-radius: 4px;
+  background: var(--fathom-raised);
+  color: var(--fathom-text);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.fathom-button-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.fathom-button {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--fathom-line);
+  border-radius: 4px;
+  background: var(--fathom-raised);
+  color: var(--fathom-text);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 90ms linear, color 90ms linear;
+}
+
+.fathom-button:hover {
+  border-color: color-mix(in srgb, var(--fathom-accent) 50%, transparent);
+  color: var(--fathom-accent);
+}
+
+/* Toolbar ----------------------------------------------------------------- */
+
+.fathom-toolbar {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--fathom-line);
+  border-radius: 6px;
+  background: rgba(14, 17, 22, 0.76);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+.fathom-transport {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fathom-text);
+  cursor: pointer;
+  transition: color 90ms linear, background 90ms linear;
+}
+
+.fathom-transport:hover:not(:disabled) {
+  color: var(--fathom-accent);
+  background: var(--fathom-raised);
+}
+
+.fathom-transport:disabled {
+  color: color-mix(in srgb, var(--fathom-muted) 55%, transparent);
+  cursor: default;
+}
+
+.fathom-toolbar-rule {
+  width: 1px;
+  height: 16px;
+  background: var(--fathom-line);
+}
+
+.fathom-stat {
+  color: var(--fathom-muted);
+  font-size: 11px;
+}
+
+.fathom-stat b {
+  font-family: var(--fathom-mono);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--fathom-text);
+}
+
+.fathom-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fathom-muted);
+}
+
+.fathom-state::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fathom-accent);
+}
+
+.fathom-state.is-paused::before {
+  background: var(--fathom-warm);
+}
+
+/* Startup and failure ----------------------------------------------------- */
+
+.fathom-splash,
+.fathom-failure {
+  display: grid;
+  place-content: center;
+  gap: 10px;
+  height: 100%;
+  padding: 40px;
+  text-align: center;
+}
+
+.fathom-splash p {
+  margin: 0;
+  color: var(--fathom-muted);
+}
+
+.fathom-splash-mark {
+  justify-self: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--fathom-line);
+  border-top-color: var(--fathom-accent);
+  border-radius: 50%;
+  animation: fathom-spin 900ms linear infinite;
+}
+
+@keyframes fathom-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+.fathom-failure {
+  max-width: 46ch;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.fathom-failure h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.fathom-failure p {
+  margin: 0;
+  color: var(--fathom-muted);
+}
+
+.fathom-failure-reason {
+  padding: 10px 12px;
+  border-left: 2px solid var(--fathom-warm);
+  background: var(--fathom-raised);
+  color: var(--fathom-text) !important;
+  font-family: var(--fathom-mono);
+  font-size: 11px;
+}
+
+.fathom-failure code {
+  font-family: var(--fathom-mono);
+  color: var(--fathom-text);
+}
+
+/* Accessibility ----------------------------------------------------------- */
+
+:focus-visible {
+  outline: 2px solid var(--fathom-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .fathom-app {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+  }
+
+  .fathom-panel {
+    border-left: 0;
+    border-top: 1px solid var(--fathom-line);
+    max-height: 46vh;
+  }
+}
+
+/* The stage is the containing block for the floating toolbar, which is why the
+   viewport is positioned rather than simply filling a grid cell. */
+.fathom-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.fathom-stage > .fathom-viewport {
+  position: absolute;
+  inset: 0;
+}

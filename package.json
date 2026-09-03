@@ -1,0 +1,15 @@
+{
+  "name": "fathom",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*/ui"],
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

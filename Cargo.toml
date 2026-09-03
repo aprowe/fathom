@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/fathom-core", "crates/fathom-web", "apps/gravity"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+fathom-core = { path = "crates/fathom-core" }
+fathom-web = { path = "crates/fathom-web" }
+fathom-native = { path = "crates/fathom-native" }
+gravity = { path = "apps/gravity" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
