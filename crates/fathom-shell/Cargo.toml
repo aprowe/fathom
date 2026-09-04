@@ -1,0 +1,13 @@
+[package]
+name = "fathom-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "An egui shell for fathom apps: one native window, no web technology."
+
+[dependencies]
+fathom-core = { workspace = true }
+egui-wgpu = "0.36"
+serde_json = "1"
+log = "0.4"
+eframe = { version = "0.36.1", default-features = false, features = ["wgpu", "default_fonts"] }

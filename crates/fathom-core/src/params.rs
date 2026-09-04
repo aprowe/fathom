@@ -198,6 +198,34 @@ impl ParamBlock {
         &self.words
     }
 
+    /// Read a float parameter by index constant.
+    pub fn f32(&self, index: usize) -> f32 {
+        self.words.get(index).map_or(0.0, |w| f32::from_bits(*w))
+    }
+
+    /// Read an int, toggle or choice parameter by index constant.
+    pub fn u32(&self, index: usize) -> u32 {
+        self.words.get(index).copied().unwrap_or(0)
+    }
+
+    /// Write a float parameter by index constant.
+    ///
+    /// An in-process interface edits the block directly through these; the web and Tauri
+    /// hosts instead ship a mirror of the whole block once a frame, because they are on
+    /// the other side of a language boundary.
+    pub fn set_f32(&mut self, index: usize, value: f32) {
+        if let Some(word) = self.words.get_mut(index) {
+            *word = value.to_bits();
+        }
+    }
+
+    /// Write an int, toggle or choice parameter by index constant.
+    pub fn set_u32(&mut self, index: usize, value: u32) {
+        if let Some(word) = self.words.get_mut(index) {
+            *word = value;
+        }
+    }
+
     /// Overwrite from a mirror sent by the UI. Short or long input is clamped rather
     /// than rejected, so a UI built against a stale schema degrades instead of dying.
     pub fn write_bytes(&mut self, bytes: &[u8]) {
@@ -289,6 +317,26 @@ mod tests {
         let p = Params::new(SCHEMA, &block);
         assert_eq!(p.float(0), 0.5);
         assert!(p.toggle(1));
+    }
+
+    #[test]
+    fn values_can_be_edited_in_place_by_an_in_process_interface() {
+        let mut block = ParamBlock::from_defaults(SCHEMA);
+        block.set_f32(0, 3.25);
+        block.set_u32(1, 0);
+        assert_eq!(block.f32(0), 3.25);
+        assert_eq!(block.u32(1), 0);
+
+        let p = Params::new(SCHEMA, &block);
+        assert_eq!(p.float(0), 3.25);
+        assert!(!p.toggle(1));
+    }
+
+    #[test]
+    fn writing_past_the_end_of_the_block_is_ignored() {
+        let mut block = ParamBlock::from_defaults(SCHEMA);
+        block.set_f32(99, 1.0);
+        assert_eq!(block.f32(99), 0.0);
     }
 
     #[test]

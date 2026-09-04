@@ -75,6 +75,17 @@ impl<A: App> Runner<A> {
         self.block.byte_len()
     }
 
+    /// The app's declared parameters.
+    pub fn schema(&self) -> &'static [ParamDef] {
+        self.schema
+    }
+
+    /// The live parameter values, for an interface that shares this process and can edit
+    /// them directly rather than shipping a mirror across a boundary.
+    pub fn params_mut(&mut self) -> &mut ParamBlock {
+        &mut self.block
+    }
+
     pub fn stats(&self) -> FrameStats {
         self.clock.stats()
     }

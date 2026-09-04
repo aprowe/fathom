@@ -11,6 +11,7 @@ license = "MIT"
 fathom-core = { path = "crates/fathom-core" }
 fathom-web = { path = "crates/fathom-web" }
 fathom-native = { path = "crates/fathom-native" }
+fathom-shell = { path = "crates/fathom-shell" }
 gravity = { path = "apps/gravity" }
 
 [profile.dev]
