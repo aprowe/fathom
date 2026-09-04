@@ -104,6 +104,14 @@ impl<A: App> Runner<A> {
     }
 
     pub fn input(&mut self, event: InputEvent) {
+        // Pointer coordinates only mean something once the interface has reported a
+        // viewport. Before that, mapping them to world space divides by a placeholder
+        // size and produces enormous positions — which an app will happily act on, for
+        // instance by planting a gravity well thousands of units off screen.
+        if self.viewport.width <= 1 || self.viewport.height <= 1 {
+            return;
+        }
+
         // Pan and zoom are framework behaviour, applied before the app sees the event,
         // so every app gets them without writing any code. The app still receives the
         // event and can do whatever else it likes with it.

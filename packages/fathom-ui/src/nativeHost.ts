@@ -102,9 +102,17 @@ export class NativeHost implements FathomHost {
     return this.info
   }
 
+  /**
+   * Let go of this interface instance only.
+   *
+   * The renderer is a process-level resource on native: the webview reloads on every
+   * hot update, and React mounts every component twice in development. Tearing the
+   * render thread down here once left a live-looking app whose simulation had stopped,
+   * still reporting the GPU it no longer had. So this releases the poll timer and
+   * nothing else.
+   */
   destroy(): void {
     if (this.statsTimer !== null) window.clearInterval(this.statsTimer)
     this.statsTimer = null
-    void this.invoke('fathom_destroy')
   }
 }
