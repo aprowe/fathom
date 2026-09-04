@@ -52,6 +52,8 @@ pub struct Shell<A: App> {
     /// The option each command-select is showing. Commands are fire-and-forget, so
     /// unlike parameters they have no stored value to read back.
     command_choice: Vec<(&'static str, usize)>,
+    /// Whether the drawer is out, on a screen narrow enough to have one.
+    drawer_open: bool,
 }
 
 impl<A: App> Shell<A> {
@@ -79,6 +81,7 @@ impl<A: App> Shell<A> {
             paused: false,
             dragging: false,
             command_choice: Vec::new(),
+            drawer_open: false,
         })
     }
 
@@ -258,214 +261,333 @@ mod input {
 mod panel {
     use super::*;
 
+    /// Below this width the panel becomes a drawer rather than a dock.
+    pub const COMPACT_WIDTH: f32 = 760.0;
+
+    /// The width of the drawer, and of the docked panel.
+    const PANEL_WIDTH: f32 = 296.0;
+
     /// The whole interface, built from the app's declared schema.
     ///
     /// This is the Rust twin of `<AutoControls/>` in the React host, and it is the same
     /// bargain: declaring a parameter is most of the work of getting a control for it.
+    ///
+    /// Docked beside the simulation on a wide screen; a drawer that slides in over it on
+    /// a narrow one, because a docked column would take half a phone screen from the
+    /// thing it controls.
     pub fn draw<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
+        let compact = ui.ctx().content_rect().width() < COMPACT_WIDTH;
+
+        if compact {
+            drawer(shell, ui);
+        } else {
+            shell.drawer_open = false;
+            egui::Panel::right("controls")
+                .exact_size(PANEL_WIDTH)
+                .resizable(false)
+                .frame(panel_frame())
+                .show(ui, |ui| contents(shell, ui, false));
+        }
+
+        transport(shell, ui, compact);
+    }
+
+    fn panel_frame() -> egui::Frame {
+        egui::Frame::NONE
+            .fill(skin::PANEL)
+            .inner_margin(egui::Margin::symmetric(18, 16))
+    }
+
+    /// The panel as a drawer: it slides in over the simulation and retracts again.
+    ///
+    /// It overlays rather than pushing the viewport aside. That is not only to match the
+    /// web panel — the simulation's target texture is sized from the central panel, so a
+    /// drawer that pushed would reallocate that texture, and the trail buffer with it, on
+    /// every frame of the slide.
+    fn drawer<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let screen = ctx.content_rect();
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            shell.drawer_open = false;
+        }
+
+        let t = ctx.animate_bool_with_time(egui::Id::new("fathom-drawer"), shell.drawer_open, 0.24);
+        if t <= 0.0 {
+            return;
+        }
+
+        // Dim the simulation behind the drawer, and dismiss on a tap.
+        let scrim = egui::Area::new(egui::Id::new("fathom-scrim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .show(&ctx, |ui| {
+                let (rect, response) =
+                    ui.allocate_exact_size(screen.size(), egui::Sense::click());
+                ui.painter()
+                    .rect_filled(rect, 0.0, egui::Color32::from_black_alpha((150.0 * t) as u8));
+                response
+            });
+        if scrim.inner.clicked() {
+            shell.drawer_open = false;
+        }
+
+        let width = (screen.width() * 0.86).min(PANEL_WIDTH);
+        let left = screen.right() - width * t;
+
+        egui::Area::new(egui::Id::new("fathom-drawer-panel"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(left, screen.top()))
+            .show(&ctx, |ui| {
+                ui.set_width(width);
+                panel_frame()
+                    .stroke(egui::Stroke::new(1.0, skin::LINE))
+                    .show(ui, |ui| {
+                        ui.set_width(width - 36.0);
+                        ui.set_min_height(screen.height() - 32.0);
+                        contents(shell, ui, true);
+                    });
+            });
+    }
+
+    /// The panel's contents: which app this is, then every declared group.
+    fn contents<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui, compact: bool) {
         let descriptor = Runner::<A>::descriptor();
 
-        egui::Panel::right("controls")
-            .exact_size(296.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::NONE
-                    .fill(skin::PANEL)
-                    .inner_margin(egui::Margin::symmetric(18, 16)),
-            )
-            .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(descriptor.name)
-                        .family(skin::semibold())
-                        .size(17.0)
-                        .color(skin::TEXT),
-                );
-                ui.label(
-                    egui::RichText::new(shell.runner.gpu().describe_adapter())
-                        .size(11.0)
-                        .color(skin::MUTED),
-                );
-                ui.add_space(4.0);
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    // Groups in declaration order, parameters before the commands filed
-                    // under the same heading.
-                    let mut groups: Vec<&'static str> = Vec::new();
-                    for p in descriptor.params {
-                        if !groups.contains(&p.group) {
-                            groups.push(p.group);
-                        }
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(descriptor.name)
+                    .family(skin::semibold())
+                    .size(17.0)
+                    .color(skin::TEXT),
+            );
+            if compact {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if skin::action(ui, "Close").clicked() {
+                        shell.drawer_open = false;
                     }
-                    for c in descriptor.commands {
-                        if !groups.contains(&c.group) {
-                            groups.push(c.group);
-                        }
+                });
+            }
+        });
+        ui.label(
+            egui::RichText::new(shell.runner.gpu().describe_adapter())
+                .size(11.0)
+                .color(skin::MUTED),
+        );
+        ui.add_space(4.0);
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            // Groups in declaration order, parameters before the commands filed
+            // under the same heading.
+            let mut groups: Vec<&'static str> = Vec::new();
+            for p in descriptor.params {
+                if !groups.contains(&p.group) {
+                    groups.push(p.group);
+                }
+            }
+            for c in descriptor.commands {
+                if !groups.contains(&c.group) {
+                    groups.push(c.group);
+                }
+            }
+
+            for group in groups {
+                skin::group_heading(ui, group);
+
+                for (index, def) in descriptor.params.iter().enumerate() {
+                    if def.group != group {
+                        continue;
                     }
+                    let block = shell.runner.params_mut();
+                    match def.kind {
+                        ParamKind::Float | ParamKind::Int => {
+                            let is_int = def.kind == ParamKind::Int;
+                            let mut value = if is_int {
+                                block.u32(index) as f32
+                            } else {
+                                block.f32(index)
+                            };
 
-                    for group in groups {
-                        skin::group_heading(ui, group);
+                            let span = def.max - def.min;
+                            let decimals = if is_int {
+                                0
+                            } else if span >= 20.0 {
+                                0
+                            } else if span >= 2.0 {
+                                2
+                            } else {
+                                3
+                            };
+                            skin::readout(ui, def.label, &format!("{value:.decimals$}"));
 
-                        for (index, def) in descriptor.params.iter().enumerate() {
-                            if def.group != group {
-                                continue;
-                            }
-                            let block = shell.runner.params_mut();
-                            match def.kind {
-                                ParamKind::Float | ParamKind::Int => {
-                                    let is_int = def.kind == ParamKind::Int;
-                                    let mut value = if is_int {
-                                        block.u32(index) as f32
-                                    } else {
-                                        block.f32(index)
-                                    };
-
-                                    let span = def.max - def.min;
-                                    let decimals = if is_int {
-                                        0
-                                    } else if span >= 20.0 {
-                                        0
-                                    } else if span >= 2.0 {
-                                        2
-                                    } else {
-                                        3
-                                    };
-                                    skin::readout(ui, def.label, &format!("{value:.decimals$}"));
-
-                                    let step = if is_int { Some(1.0) } else { None };
-                                    if skin::needle_slider(ui, &mut value, def.min, def.max, step) {
-                                        if is_int {
-                                            block.set_u32(index, value.round() as u32);
-                                        } else {
-                                            block.set_f32(index, value);
-                                        }
-                                    }
-                                }
-                                ParamKind::Toggle => {
-                                    let mut on = block.u32(index) != 0;
-                                    let changed =
-                                        skin::row(ui, def.label, |ui| skin::pill_toggle(ui, &mut on));
-                                    if changed {
-                                        block.set_u32(index, on as u32);
-                                    }
-                                }
-                                ParamKind::Choice => {
-                                    let mut value = block.u32(index) as usize;
-                                    let current = def.options.get(value).copied().unwrap_or("");
-                                    skin::row(ui, def.label, |ui| {
-                                        egui::ComboBox::from_id_salt(def.name)
-                                            .selected_text(current)
-                                            .show_ui(ui, |ui| {
-                                                for (i, option) in def.options.iter().enumerate() {
-                                                    ui.selectable_value(&mut value, i, *option);
-                                                }
-                                            });
-                                    });
-                                    if value as u32 != block.u32(index) {
-                                        block.set_u32(index, value as u32);
-                                    }
+                            let step = if is_int { Some(1.0) } else { None };
+                            if skin::needle_slider(ui, &mut value, def.min, def.max, step) {
+                                if is_int {
+                                    block.set_u32(index, value.round() as u32);
+                                } else {
+                                    block.set_f32(index, value);
                                 }
                             }
-                            ui.add_space(4.0);
                         }
-
-                        // Selects first, then the buttons together on one row, the same
-                        // arrangement the web panel uses.
-                        for def in descriptor.commands.iter().filter(|c| c.group == group) {
-                            if def.options.is_empty() {
-                                continue;
+                        ParamKind::Toggle => {
+                            let mut on = block.u32(index) != 0;
+                            let changed =
+                                skin::row(ui, def.label, |ui| skin::pill_toggle(ui, &mut on));
+                            if changed {
+                                block.set_u32(index, on as u32);
                             }
-                            let selected = shell.choice_of(def.name, def.initial as usize);
-                            let mut value = selected;
+                        }
+                        ParamKind::Choice => {
+                            let mut value = block.u32(index) as usize;
+                            let current = def.options.get(value).copied().unwrap_or("");
                             skin::row(ui, def.label, |ui| {
                                 egui::ComboBox::from_id_salt(def.name)
-                                    .selected_text(def.options.get(value).copied().unwrap_or(""))
+                                    .selected_text(current)
                                     .show_ui(ui, |ui| {
                                         for (i, option) in def.options.iter().enumerate() {
                                             ui.selectable_value(&mut value, i, *option);
                                         }
                                     });
                             });
-                            if value != selected {
-                                shell.remember_choice(def.name, value);
-                                shell
-                                    .runner
-                                    .command(def.name, serde_json::json!({ "value": value }));
+                            if value as u32 != block.u32(index) {
+                                block.set_u32(index, value as u32);
                             }
-                            ui.add_space(4.0);
                         }
+                    }
+                    ui.add_space(4.0);
+                }
 
-                        let buttons: Vec<_> = descriptor
-                            .commands
-                            .iter()
-                            .filter(|c| c.group == group && c.options.is_empty())
-                            .collect();
-                        if !buttons.is_empty() {
-                            ui.horizontal(|ui| {
-                                for def in buttons {
-                                    if skin::action(ui, def.label).clicked() {
-                                        shell.runner.command(def.name, serde_json::json!({}));
-                                    }
+                // Selects first, then the buttons together on one row, the same
+                // arrangement the web panel uses.
+                for def in descriptor.commands.iter().filter(|c| c.group == group) {
+                    if def.options.is_empty() {
+                        continue;
+                    }
+                    let selected = shell.choice_of(def.name, def.initial as usize);
+                    let mut value = selected;
+                    skin::row(ui, def.label, |ui| {
+                        egui::ComboBox::from_id_salt(def.name)
+                            .selected_text(def.options.get(value).copied().unwrap_or(""))
+                            .show_ui(ui, |ui| {
+                                for (i, option) in def.options.iter().enumerate() {
+                                    ui.selectable_value(&mut value, i, *option);
                                 }
                             });
-                        }
-                        ui.add_space(6.0);
+                    });
+                    if value != selected {
+                        shell.remember_choice(def.name, value);
+                        shell
+                            .runner
+                            .command(def.name, serde_json::json!({ "value": value }));
                     }
-                });
-            });
+                    ui.add_space(4.0);
+                }
 
-        egui::Panel::bottom("transport")
-            .resizable(false)
-            .frame(
-                egui::Frame::NONE
-                    .fill(skin::PANEL)
-                    .inner_margin(egui::Margin::symmetric(14, 8)),
-            )
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let label = if shell.paused { "Run" } else { "Pause" };
-                    if skin::action(ui, label).clicked() {
-                        shell.paused = !shell.paused;
-                        let command =
-                            if shell.paused { "fathom.pause" } else { "fathom.resume" };
-                        shell.runner.command(command, serde_json::Value::Null);
-                    }
-                    ui.add_enabled_ui(shell.paused, |ui| {
-                        if skin::action(ui, "Step").clicked() {
-                            shell.runner.command("fathom.step", serde_json::Value::Null);
+                let buttons: Vec<_> = descriptor
+                    .commands
+                    .iter()
+                    .filter(|c| c.group == group && c.options.is_empty())
+                    .collect();
+                if !buttons.is_empty() {
+                    ui.horizontal(|ui| {
+                        for def in buttons {
+                            if skin::action(ui, def.label).clicked() {
+                                shell.runner.command(def.name, serde_json::json!({}));
+                            }
                         }
                     });
-                    if skin::action(ui, "Recentre").clicked() {
-                        shell.runner.command("fathom.reset_camera", serde_json::Value::Null);
-                    }
+                }
+                ui.add_space(6.0);
+            }
+        });
+    }
+    /// Play, step, recentre, and the frame counters.
+    /// A floating bar rather than a docked one, the same arrangement the web panel uses:
+    /// interface over simulation, and no strip of chrome eating height on a phone.
+    fn transport<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui, compact: bool) {
+        let ctx = ui.ctx().clone();
 
-                    ui.add_space(6.0);
-                    let stats = shell.runner.stats();
-                    for (value, unit) in [
-                        (format!("{:.0}", stats.fps), "fps"),
-                        (format!("{:.1}", stats.frame_ms), "ms"),
-                    ] {
-                        ui.label(
-                            egui::RichText::new(value)
-                                .family(egui::FontFamily::Monospace)
-                                .size(11.0)
-                                .color(skin::TEXT),
-                        );
+        egui::Area::new(egui::Id::new("fathom-transport"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(16.0, -16.0))
+            .show(&ctx, |ui| {
+                floating_frame().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                let label = if shell.paused { "Run" } else { "Pause" };
+                if skin::action(ui, label).clicked() {
+                    shell.paused = !shell.paused;
+                    let command =
+                        if shell.paused { "fathom.pause" } else { "fathom.resume" };
+                    shell.runner.command(command, serde_json::Value::Null);
+                }
+                ui.add_enabled_ui(shell.paused, |ui| {
+                    if skin::action(ui, "Step").clicked() {
+                        shell.runner.command("fathom.step", serde_json::Value::Null);
+                    }
+                });
+                if skin::action(ui, "Recentre").clicked() {
+                    shell.runner.command("fathom.reset_camera", serde_json::Value::Null);
+                }
+
+                ui.add_space(6.0);
+                let stats = shell.runner.stats();
+                let mut readouts = vec![(format!("{:.0}", stats.fps), "fps")];
+                if !compact {
+                    readouts.push((format!("{:.1}", stats.frame_ms), "ms"));
+                }
+                for (value, unit) in readouts {
+                    ui.label(
+                        egui::RichText::new(value)
+                            .family(egui::FontFamily::Monospace)
+                            .size(11.0)
+                            .color(skin::TEXT),
+                    );
+                    if !compact {
                         ui.label(egui::RichText::new(unit).size(11.0).color(skin::MUTED));
-                        ui.add_space(4.0);
                     }
+                    ui.add_space(4.0);
+                }
 
-                    // A dot rather than a word carries the state at a glance; the word
-                    // is there for anyone who needs it spelled out.
-                    let (dot, word) = if shell.paused {
-                        (skin::WARM, "Paused")
-                    } else {
-                        (skin::ACCENT, "Running")
-                    };
-                    let (r, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
-                    ui.painter().circle_filled(r.center(), 3.0, dot);
+                // A dot rather than a word carries the state at a glance; the word
+                // is there for anyone who needs it spelled out.
+                let (dot, word) = if shell.paused {
+                    (skin::WARM, "Paused")
+                } else {
+                    (skin::ACCENT, "Running")
+                };
+                let (r, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
+                ui.painter().circle_filled(r.center(), 3.0, dot);
+                if !compact {
                     ui.label(egui::RichText::new(word).size(11.0).color(skin::MUTED));
+                }
+
+                    });
                 });
             });
+
+        // While the drawer is out it covers this corner, and the scrim, Escape and the
+        // drawer's own Close button are all available, so the toggle stands down.
+        if compact && !shell.drawer_open {
+            egui::Area::new(egui::Id::new("fathom-controls-toggle"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
+                .show(&ctx, |ui| {
+                    floating_frame().show(ui, |ui| {
+                        if skin::action(ui, "Controls").clicked() {
+                            shell.drawer_open = true;
+                        }
+                    });
+                });
+        }
+    }
+
+    /// The casing shared by the things that float over the simulation.
+    fn floating_frame() -> egui::Frame {
+        egui::Frame::NONE
+            .fill(skin::PANEL.gamma_multiply(0.94))
+            .stroke(egui::Stroke::new(1.0, skin::LINE))
+            .corner_radius(6.0)
+            .inner_margin(egui::Margin::symmetric(12, 7))
     }
 }
 
