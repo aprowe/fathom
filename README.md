@@ -5,7 +5,7 @@ run on two targets:
 
 - **Web** — the app compiled to wasm, drawing into a `<canvas>` through WebGPU.
 - **Native** — a Tauri window whose transparent webview *is* the interface, floating over
-  a wgpu child window that the interface tells where to draw.
+  a borderless wgpu window that the interface tells where to draw.
 
 The panel is the same React code on both. That is enforced by a type, not by discipline:
 everything the interface can do to a simulation goes through one `FathomHost` interface
@@ -76,9 +76,14 @@ two hosts only manage a surface and marshal messages, which is what keeps the ta
 from drifting apart.
 
 **The viewport.** `<SimViewport/>` renders a transparent div, measures itself, and reports
-its device-pixel rect. On web that sizes a canvas. On native it moves a wgpu **child
-window** owned by the Tauri window — so the surface moves, resizes and clips with the
-layout for free, with no always-on-top tracking and no z-order fights.
+its device-pixel rect. On web that sizes a canvas. On native it moves a borderless wgpu
+window that the Tauri window **owns**, so the two stay stacked and minimise together.
+
+A child window inside the Tauri window would have been tidier — the OS would clip and
+move it for free — but it cannot work: a transparent WRY window is created with
+`WS_EX_NOREDIRECTIONBITMAP` and has no redirection surface, so a child HWND holding a
+DXGI swapchain is never composited into it. It sits there correctly positioned, visible
+by every API measure, drawing nothing anyone can see.
 
 **Input** is captured in the DOM on both targets. Natively the transparent webview is the
 topmost layer, so pointer and key events land in React exactly as they do on web. One
@@ -104,7 +109,7 @@ scroll to zoom, press <kbd>R</kbd> to reseed.
 ```
 crates/fathom-core     the App trait, params, camera, clock, Runner
 crates/fathom-web      wasm host: a WebGPU canvas driven from JavaScript
-crates/fathom-native   Tauri host: a wgpu child window and a render thread
+crates/fathom-native   Tauri host: the wgpu render window and its thread
 packages/fathom-ui     @fathom/ui — SimViewport, Panel, Toolbar, controls
 apps/gravity           the example: sim crate, React panel, Tauri shell
 ```
@@ -132,6 +137,7 @@ presented frame. The web target is unaffected.
 
 ## Status
 
-The native render surface is implemented for Windows. macOS (an `NSView` subview) and
-Linux sit behind the same `ChildSurface` interface and are not filled in yet; the web
-target works everywhere WebGPU does.
+The native render surface is implemented for Windows. macOS (an `NSView` subview, which
+does not have the composition problem Windows has) and Linux sit behind the same
+`OverlaySurface` interface and are not filled in yet; the web target works everywhere
+WebGPU does.
