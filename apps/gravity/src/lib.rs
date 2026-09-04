@@ -18,7 +18,11 @@ use sim::{Sim, Uniforms};
 
 fathom_core::params! {
     G           => fathom_core::ParamDef::float("g", "Gravity", 1.0, 0.0, 4.0).group("Physics"),
-    SOFTENING   => fathom_core::ParamDef::float("softening", "Softening", 0.02, 0.002, 0.2).group("Physics"),
+    // The mean spacing in a unit disc of 8k bodies is about 0.02, so a softening of
+    // that size lets the heavy core scatter violently off its nearest neighbours: it
+    // random-walks and drags the whole disc out of frame within a minute. Keeping the
+    // default a few times the spacing is what holds the scene together.
+    SOFTENING   => fathom_core::ParamDef::float("softening", "Softening", 0.06, 0.002, 0.3).group("Physics"),
     TIMESCALE   => fathom_core::ParamDef::float("timescale", "Time scale", 1.0, 0.0, 3.0).group("Physics"),
     WELL        => fathom_core::ParamDef::float("well", "Drag pull", 9.0, 0.0, 40.0).group("Physics"),
     POINT_SIZE  => fathom_core::ParamDef::float("pointSize", "Point size", 1.6, 0.5, 6.0).group("Render"),

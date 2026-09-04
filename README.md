@@ -126,15 +126,6 @@ CPU sum. A tiling bug drops or double-counts bodies while still *looking* plausi
 which is exactly the kind of thing an eye test misses. It skips itself when no adapter is
 available.
 
-## Known issue
-
-On native, the simulation diverges during its first second and the view comes up empty;
-pressing **Reset** restores it, and it then runs stably. The initial conditions and the
-parameter defaults are identical either side of that Reset, so the cause is in the first
-few steps rather than in the setup — the next thing to check is the `dt` the render
-thread hands the clock across the gap between the surface being configured and the first
-presented frame. The web target is unaffected.
-
 ## Status
 
 The native render surface is implemented for Windows. macOS (an `NSView` subview, which
