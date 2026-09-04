@@ -207,5 +207,14 @@ impl App for Gravity {
     }
 }
 
+/// Start the app in a canvas.
+///
+/// The browser gets the same egui shell the desktop binary runs — eframe draws egui to
+/// the canvas and wgpu talks to WebGPU — so no part of the interface is HTML.
 #[cfg(target_arch = "wasm32")]
-fathom_web::export_app!(Gravity);
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bindgen::JsValue> {
+    std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+    let _ = console_log::init_with_level(log::Level::Warn);
+    fathom_shell::run_web::<Gravity>(canvas).await
+}

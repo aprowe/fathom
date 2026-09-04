@@ -20,6 +20,8 @@
 //! image. That is what keeps the app's `draw` unchanged: it still receives a target view
 //! and renders into it, exactly as it does when that view is a swapchain.
 
+pub mod skin;
+
 use std::sync::Arc;
 
 use eframe::egui;
@@ -128,7 +130,13 @@ impl<A: App> Shell<A> {
 impl<A: App> eframe::App for Shell<A> {
     /// The window is transparent nowhere: the simulation covers the whole canvas.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.02, 0.024, 0.035, 1.0]
+        let g = skin::GROUND;
+        [
+            g.r() as f32 / 255.0,
+            g.g() as f32 / 255.0,
+            g.b() as f32 / 255.0,
+            1.0,
+        ]
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -166,6 +174,7 @@ impl<A: App> eframe::App for Shell<A> {
                     );
                 }
             });
+
     }
 }
 
@@ -253,60 +262,30 @@ mod panel {
     ///
     /// This is the Rust twin of `<AutoControls/>` in the React host, and it is the same
     /// bargain: declaring a parameter is most of the work of getting a control for it.
-    /// A control's name on the left and its value on the right, in tabular figures so
-    /// the number does not shift sideways as it changes.
-    fn labelled(ui: &mut egui::Ui, label: &str, value: &str) {
-        ui.horizontal(|ui| {
-            ui.label(label);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.monospace(
-                    egui::RichText::new(value).color(egui::Color32::from_rgb(0x6f, 0xd2, 0xff)),
-                );
-            });
-        });
-    }
-
     pub fn draw<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
         let descriptor = Runner::<A>::descriptor();
 
-        egui::Panel::bottom("transport").resizable(false).show(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let label = if shell.paused { "Run" } else { "Pause" };
-                if ui.button(label).clicked() {
-                    shell.paused = !shell.paused;
-                    let command =
-                        if shell.paused { "fathom.pause" } else { "fathom.resume" };
-                    shell.runner.command(command, serde_json::Value::Null);
-                }
-                if ui.add_enabled(shell.paused, egui::Button::new("Step")).clicked() {
-                    shell.runner.command("fathom.step", serde_json::Value::Null);
-                }
-                if ui.button("Recentre").clicked() {
-                    shell.runner.command("fathom.reset_camera", serde_json::Value::Null);
-                }
-
-                ui.separator();
-                let stats = shell.runner.stats();
-                ui.monospace(format!("{:>3.0} fps", stats.fps));
-                ui.monospace(format!("{:>5.1} ms", stats.frame_ms));
-                ui.label(if shell.paused { "Paused" } else { "Running" });
-            });
-            ui.add_space(4.0);
-        });
-
         egui::Panel::right("controls")
-            .exact_size(288.0)
+            .exact_size(296.0)
             .resizable(false)
+            .frame(
+                egui::Frame::NONE
+                    .fill(skin::PANEL)
+                    .inner_margin(egui::Margin::symmetric(18, 16)),
+            )
             .show(ui, |ui| {
-                ui.add_space(10.0);
-                ui.heading(descriptor.name);
+                ui.label(
+                    egui::RichText::new(descriptor.name)
+                        .family(skin::semibold())
+                        .size(17.0)
+                        .color(skin::TEXT),
+                );
                 ui.label(
                     egui::RichText::new(shell.runner.gpu().describe_adapter())
-                        .small()
-                        .weak(),
+                        .size(11.0)
+                        .color(skin::MUTED),
                 );
-                ui.add_space(6.0);
+                ui.add_space(4.0);
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // Groups in declaration order, parameters before the commands filed
@@ -324,15 +303,12 @@ mod panel {
                     }
 
                     for group in groups {
-                        ui.separator();
-                        ui.label(egui::RichText::new(group).strong());
-                        ui.add_space(4.0);
+                        skin::group_heading(ui, group);
 
                         for (index, def) in descriptor.params.iter().enumerate() {
                             if def.group != group {
                                 continue;
                             }
-                            let width = ui.available_width();
                             let block = shell.runner.params_mut();
                             match def.kind {
                                 ParamKind::Float | ParamKind::Int => {
@@ -353,17 +329,10 @@ mod panel {
                                     } else {
                                         3
                                     };
-                                    labelled(ui, def.label, &format!("{value:.decimals$}"));
+                                    skin::readout(ui, def.label, &format!("{value:.decimals$}"));
 
-                                    // egui lays a slider out as [handle][value][label] on
-                                    // one line, which has no room at panel width. The
-                                    // label and value go above instead, and the slider
-                                    // takes the full width beneath them.
-                                    ui.spacing_mut().slider_width = width;
-                                    let slider = egui::Slider::new(&mut value, def.min..=def.max)
-                                        .show_value(false);
-                                    let slider = if is_int { slider.step_by(1.0) } else { slider };
-                                    if ui.add(slider).changed() {
+                                    let step = if is_int { Some(1.0) } else { None };
+                                    if skin::needle_slider(ui, &mut value, def.min, def.max, step) {
                                         if is_int {
                                             block.set_u32(index, value.round() as u32);
                                         } else {
@@ -373,15 +342,16 @@ mod panel {
                                 }
                                 ParamKind::Toggle => {
                                     let mut on = block.u32(index) != 0;
-                                    if ui.checkbox(&mut on, def.label).changed() {
+                                    let changed =
+                                        skin::row(ui, def.label, |ui| skin::pill_toggle(ui, &mut on));
+                                    if changed {
                                         block.set_u32(index, on as u32);
                                     }
                                 }
                                 ParamKind::Choice => {
                                     let mut value = block.u32(index) as usize;
                                     let current = def.options.get(value).copied().unwrap_or("");
-                                    ui.horizontal(|ui| {
-                                        ui.label(def.label);
+                                    skin::row(ui, def.label, |ui| {
                                         egui::ComboBox::from_id_salt(def.name)
                                             .selected_text(current)
                                             .show_ui(ui, |ui| {
@@ -395,7 +365,7 @@ mod panel {
                                     }
                                 }
                             }
-                            ui.add_space(8.0);
+                            ui.add_space(4.0);
                         }
 
                         // Selects first, then the buttons together on one row, the same
@@ -406,8 +376,7 @@ mod panel {
                             }
                             let selected = shell.choice_of(def.name, def.initial as usize);
                             let mut value = selected;
-                            ui.horizontal(|ui| {
-                                ui.label(def.label);
+                            skin::row(ui, def.label, |ui| {
                                 egui::ComboBox::from_id_salt(def.name)
                                     .selected_text(def.options.get(value).copied().unwrap_or(""))
                                     .show_ui(ui, |ui| {
@@ -422,7 +391,7 @@ mod panel {
                                     .runner
                                     .command(def.name, serde_json::json!({ "value": value }));
                             }
-                            ui.add_space(8.0);
+                            ui.add_space(4.0);
                         }
 
                         let buttons: Vec<_> = descriptor
@@ -433,7 +402,7 @@ mod panel {
                         if !buttons.is_empty() {
                             ui.horizontal(|ui| {
                                 for def in buttons {
-                                    if ui.button(def.label).clicked() {
+                                    if skin::action(ui, def.label).clicked() {
                                         shell.runner.command(def.name, serde_json::json!({}));
                                     }
                                 }
@@ -441,6 +410,60 @@ mod panel {
                         }
                         ui.add_space(6.0);
                     }
+                });
+            });
+
+        egui::Panel::bottom("transport")
+            .resizable(false)
+            .frame(
+                egui::Frame::NONE
+                    .fill(skin::PANEL)
+                    .inner_margin(egui::Margin::symmetric(14, 8)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let label = if shell.paused { "Run" } else { "Pause" };
+                    if skin::action(ui, label).clicked() {
+                        shell.paused = !shell.paused;
+                        let command =
+                            if shell.paused { "fathom.pause" } else { "fathom.resume" };
+                        shell.runner.command(command, serde_json::Value::Null);
+                    }
+                    ui.add_enabled_ui(shell.paused, |ui| {
+                        if skin::action(ui, "Step").clicked() {
+                            shell.runner.command("fathom.step", serde_json::Value::Null);
+                        }
+                    });
+                    if skin::action(ui, "Recentre").clicked() {
+                        shell.runner.command("fathom.reset_camera", serde_json::Value::Null);
+                    }
+
+                    ui.add_space(6.0);
+                    let stats = shell.runner.stats();
+                    for (value, unit) in [
+                        (format!("{:.0}", stats.fps), "fps"),
+                        (format!("{:.1}", stats.frame_ms), "ms"),
+                    ] {
+                        ui.label(
+                            egui::RichText::new(value)
+                                .family(egui::FontFamily::Monospace)
+                                .size(11.0)
+                                .color(skin::TEXT),
+                        );
+                        ui.label(egui::RichText::new(unit).size(11.0).color(skin::MUTED));
+                        ui.add_space(4.0);
+                    }
+
+                    // A dot rather than a word carries the state at a glance; the word
+                    // is there for anyone who needs it spelled out.
+                    let (dot, word) = if shell.paused {
+                        (skin::WARM, "Paused")
+                    } else {
+                        (skin::ACCENT, "Running")
+                    };
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 3.0, dot);
+                    ui.label(egui::RichText::new(word).size(11.0).color(skin::MUTED));
                 });
             });
     }
@@ -462,7 +485,7 @@ pub fn run_native<A: App>(title: &str) -> eframe::Result {
         title,
         options,
         Box::new(|cc| {
-            theme::apply(&cc.egui_ctx);
+            skin::install(&cc.egui_ctx);
             Ok(Box::new(Shell::<A>::new(cc)?) as Box<dyn eframe::App>)
         }),
     )
@@ -481,37 +504,10 @@ pub async fn run_web<A: App>(
             canvas,
             eframe::WebOptions::default(),
             Box::new(|cc| {
-                theme::apply(&cc.egui_ctx);
+                skin::install(&cc.egui_ctx);
                 Ok(Box::new(Shell::<A>::new(cc)?) as Box<dyn eframe::App>)
             }),
         )
         .await
 }
 
-mod theme {
-    use super::*;
-
-    /// The same instrument casing the web panel wears, in egui's terms: a cool slate
-    /// ground with the accent lifted from the simulation's own colour ramp.
-    pub fn apply(ctx: &egui::Context) {
-        let mut visuals = egui::Visuals::dark();
-        let ground = egui::Color32::from_rgb(0x12, 0x17, 0x22);
-        let raised = egui::Color32::from_rgb(0x1a, 0x21, 0x2c);
-        let line = egui::Color32::from_rgb(0x23, 0x2c, 0x3a);
-        let accent = egui::Color32::from_rgb(0x6f, 0xd2, 0xff);
-
-        visuals.panel_fill = ground;
-        visuals.window_fill = ground;
-        visuals.extreme_bg_color = egui::Color32::from_rgb(0x0e, 0x11, 0x16);
-        visuals.widgets.noninteractive.bg_fill = raised;
-        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, line);
-        visuals.widgets.inactive.bg_fill = raised;
-        visuals.widgets.hovered.bg_fill = line;
-        visuals.widgets.active.bg_fill = accent.gamma_multiply(0.5);
-        visuals.selection.bg_fill = accent.gamma_multiply(0.4);
-        visuals.selection.stroke = egui::Stroke::new(1.0, accent);
-        visuals.override_text_color = Some(egui::Color32::from_rgb(0xdc, 0xe3, 0xed));
-
-        ctx.set_visuals(visuals);
-    }
-}

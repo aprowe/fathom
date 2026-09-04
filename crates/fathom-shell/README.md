@@ -5,7 +5,10 @@ The app crate it runs is byte-for-byte the one they run — `apps/gravity` is no
 on this branch at all. What changes is only who draws the interface.
 
 ```bash
-cargo run -p gravity --bin gravity-egui
+cargo run -p gravity --bin gravity-egui          # desktop
+
+cd apps/gravity && wasm-pack build --target web --out-dir pkg --release
+python -m http.server 8099                        # then open /web/index.html
 ```
 
 ## Why
@@ -46,5 +49,20 @@ is no mirror and no serialisation anywhere in the frame.
 `eframe::WebRunner`, where egui draws to a canvas and wgpu talks to WebGPU — so no part
 of the interface is HTML on either target, and this host covers both on its own.
 
-The web entry point is written but **not yet built or verified**; only the native path
-has been run.
+Both are built and verified, at 60fps: Vulkan on the desktop, WebGPU in the browser. The
+only HTML in the web build is a page whose whole job is to hand egui a canvas.
+
+## The skin
+
+egui has a strong default appearance, and three things give it away: the typeface, the
+widget shapes, and a flat grey palette. `skin.rs` replaces all three, so the panel wears
+the same identity as the web one and the hosts read as one product.
+
+* **Type** — IBM Plex Sans and Plex Mono, embedded (OFL, `fonts/OFL.txt`), so neither
+  build fetches anything at runtime. Numerals are mono and tabular so a value does not
+  shift sideways as it changes.
+* **Widgets** — the sliders and toggles are drawn, not configured: a hairline track with
+  a *needle* rather than a knob in a groove, and a sliding pill rather than a tick-box.
+  egui's hover-expansion is switched off, because that bounce is one of its tells.
+* **Palette** — the fathom instrument casing, with the accent lifted from the
+  simulation's own colour ramp so the panel belongs to what it controls.

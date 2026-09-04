@@ -1295,6 +1295,7 @@ dependencies = [
  "fathom-core",
  "log",
  "serde_json",
+ "web-sys",
 ]
 
 [[package]]
@@ -1810,7 +1811,6 @@ dependencies = [
  "env_logger",
  "fathom-core",
  "fathom-shell",
- "fathom-web",
  "log",
  "pollster 0.4.0",
  "wasm-bindgen",
