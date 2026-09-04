@@ -18,6 +18,9 @@ cd ui && npm run dev
 
 # native (Windows)
 cd apps/gravity/src-tauri && npx tauri dev
+
+# one self-contained HTML file, wasm and all
+python apps/gravity/build-artifact.py
 ```
 
 ## Writing an app
@@ -118,8 +121,17 @@ CPU sum. A tiling bug drops or double-counts bodies while still *looking* plausi
 which is exactly the kind of thing an eye test misses. It skips itself when no adapter is
 available.
 
+## Known issue
+
+On native, the simulation diverges during its first second and the view comes up empty;
+pressing **Reset** restores it, and it then runs stably. The initial conditions and the
+parameter defaults are identical either side of that Reset, so the cause is in the first
+few steps rather than in the setup — the next thing to check is the `dt` the render
+thread hands the clock across the gap between the surface being configured and the first
+presented frame. The web target is unaffected.
+
 ## Status
 
-The native child surface is implemented for Windows. macOS (an `NSView` subview) and
+The native render surface is implemented for Windows. macOS (an `NSView` subview) and
 Linux sit behind the same `ChildSurface` interface and are not filled in yet; the web
 target works everywhere WebGPU does.
