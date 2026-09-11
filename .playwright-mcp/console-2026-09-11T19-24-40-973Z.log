@@ -6,3 +6,16 @@
 [   30768ms] [WARNING] Unhandled egui viewport command: SetTheme(Dark) - not implemented in web backend @ http://localhost:3000/sketches/gravity/gravity.js:2702
 [  131167ms] [WARNING] The powerPreference option is currently ignored when calling requestAdapter() on Windows. See https://crbug.com/369219127 @ http://localhost:3000/sketches/gravity/gravity.js:1615
 [  131231ms] [WARNING] Unhandled egui viewport command: SetTheme(Dark) - not implemented in web backend @ http://localhost:3000/sketches/gravity/gravity.js:2702
+[  282078ms] [WARNING] The powerPreference option is currently ignored when calling requestAdapter() on Windows. See https://crbug.com/369219127 @ http://localhost:3000/sketches/gravity/gravity.js:1615
+[  282101ms] [WARNING] Unhandled egui viewport command: SetTheme(Dark) - not implemented in web backend @ http://localhost:3000/sketches/gravity/gravity.js:2702
+[  318790ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/_app/immutable/assets/0.XdYdSNha.css:0
+[  318805ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/_app/immutable/entry/start.ByhkELWj.js:0
+[  318806ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/_app/immutable/chunks/B55P6qFm.js:0
+[  318807ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/_app/immutable/entry/app.BgFvqLiR.js:0
+[  318849ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/_app/immutable/nodes/0.B7_z2Udf.js:0
+[  318849ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/_app/immutable/chunks/C6B1z6uD.js:0
+[  318849ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/_app/immutable/nodes/5.CvT-KWGf.js:0
+[  318850ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/_app/immutable/chunks/us1mXXIg.js:0
+[  392334ms] [ERROR] Failed to load resource: the server responded with a status of 403 (Forbidden) @ http://localhost:3000/api/edits:0
+[  396679ms] [WARNING] The powerPreference option is currently ignored when calling requestAdapter() on Windows. See https://crbug.com/369219127 @ http://localhost:3000/sketches/gravity/gravity.js:1615
+[  396747ms] [WARNING] Unhandled egui viewport command: SetTheme(Dark) - not implemented in web backend @ http://localhost:3000/sketches/gravity/gravity.js:2702

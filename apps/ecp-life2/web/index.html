@@ -48,7 +48,7 @@
     </style>
   </head>
   <body>
-    <canvas id="sim"></canvas>
+    <canvas id="sim" oncontextmenu="return false"></canvas>
     <div id="fallback" hidden></div>
 
     <script type="module">
@@ -67,7 +67,7 @@
       }
 
       // The right button aims a body; the browser must not answer it with a menu.
-      document.getElementById('sim').addEventListener('contextmenu', (e) => e.preventDefault())
+      document.addEventListener('contextmenu', (e) => e.preventDefault())
 
       try {
         await init()
