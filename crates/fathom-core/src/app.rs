@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::camera::Camera;
 use crate::event::{KeyEvent, MouseEvent, ScrollEvent};
 use crate::gpu::Gpu;
-use crate::params::{ParamDef, Params};
+use crate::params::{ParamBlock, ParamDef, Params};
 use crate::viewport::Viewport;
 
 /// A button or a select in the panel that triggers something the app cannot express as
@@ -100,19 +100,41 @@ pub struct EventCtx<'a> {
 
 /// Handed to [`App::command`]. `gpu` is available because commands are exactly the
 /// things that need to reallocate.
+///
+/// This is also the one context that can *write* parameters. Everywhere else the app
+/// only reads them, because everywhere else the interface is the author of their values
+/// and an app writing underneath it would fight the widget the user is holding. A
+/// command is the exception by nature: applying a preset means moving the sliders, and
+/// a preset that could not move a slider would not be a preset.
 pub struct CommandCtx<'a> {
     pub gpu: &'a Gpu,
     pub name: &'a str,
     pub value: &'a Value,
     pub viewport: Viewport,
     pub camera: &'a mut Camera,
-    pub params: Params<'a>,
+    pub schema: &'static [ParamDef],
+    pub block: &'a mut ParamBlock,
 }
 
 impl CommandCtx<'_> {
     /// The `value` field as an integer, for commands declared with options.
     pub fn index(&self) -> u32 {
         self.value.get("value").and_then(Value::as_u64).unwrap_or(0) as u32
+    }
+
+    /// Read the parameters, the same view every other callback receives.
+    pub fn params(&self) -> Params<'_> {
+        Params::new(self.schema, self.block)
+    }
+
+    /// Write a float parameter by index constant.
+    pub fn set_float(&mut self, index: usize, value: f32) {
+        self.block.set_f32(index, value);
+    }
+
+    /// Write an int, toggle or choice parameter by index constant.
+    pub fn set_int(&mut self, index: usize, value: u32) {
+        self.block.set_u32(index, value);
     }
 }
 

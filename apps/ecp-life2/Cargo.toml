@@ -1,0 +1,33 @@
+[package]
+name = "ecp-life2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Particle life with relational colour energy, built on fathom."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+fathom-core = { workspace = true }
+fathom-shell = { workspace = true }
+log = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+console_log = "1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe = { version = "0.36.1", default-features = false }
+env_logger = { version = "0.11.11", default-features = false }
+
+[[bin]]
+name = "ecp-life2-egui"
+path = "src/bin/ecp-life2-egui.rs"
+
+[dev-dependencies]
+pollster = "0.4"

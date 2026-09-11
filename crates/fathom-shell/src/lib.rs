@@ -20,6 +20,7 @@
 //! image. That is what keeps the app's `draw` unchanged: it still receives a target view
 //! and renders into it, exactly as it does when that view is a swapchain.
 
+pub mod control;
 pub mod skin;
 
 use std::sync::Arc;
@@ -27,7 +28,8 @@ use std::sync::Arc;
 use eframe::egui;
 use egui_wgpu::wgpu;
 use fathom_core::{
-    App, Gpu, InputEvent, KeyEvent, MouseEvent, ParamKind, Runner, ScrollEvent, Viewport,
+    App, Gpu, InputEvent, KeyEvent, MouseEvent, ParamDef, ParamKind, Runner, ScrollEvent,
+    Viewport,
 };
 
 /// The texture the simulation draws into, and its identity inside egui.
@@ -54,6 +56,9 @@ pub struct Shell<A: App> {
     command_choice: Vec<(&'static str, usize)>,
     /// Whether the drawer is out, on a screen narrow enough to have one.
     drawer_open: bool,
+    /// How wide the docked panel is, in points. Owned here rather than left to egui so
+    /// the drawer can borrow the same number on a narrow screen.
+    panel_width: f32,
 }
 
 impl<A: App> Shell<A> {
@@ -82,6 +87,7 @@ impl<A: App> Shell<A> {
             dragging: false,
             command_choice: Vec::new(),
             drawer_open: false,
+            panel_width: panel::DEFAULT_WIDTH,
         })
     }
 
@@ -264,8 +270,12 @@ mod panel {
     /// Below this width the panel becomes a drawer rather than a dock.
     pub const COMPACT_WIDTH: f32 = 760.0;
 
-    /// The width of the drawer, and of the docked panel.
-    const PANEL_WIDTH: f32 = 296.0;
+    /// What the docked panel starts at, and what the drawer uses.
+    pub const DEFAULT_WIDTH: f32 = 340.0;
+    /// Narrow enough to give the simulation the screen; wide enough that a long label
+    /// and its readout still fit on one row.
+    pub const MIN_WIDTH: f32 = 280.0;
+    pub const MAX_WIDTH: f32 = 560.0;
 
     /// The whole interface, built from the app's declared schema.
     ///
@@ -282,11 +292,16 @@ mod panel {
             drawer(shell, ui);
         } else {
             shell.drawer_open = false;
-            egui::Panel::right("controls")
-                .exact_size(PANEL_WIDTH)
-                .resizable(false)
+            let response = egui::Panel::right("controls")
+                .default_size(shell.panel_width)
+                .min_size(MIN_WIDTH)
+                .max_size(MAX_WIDTH)
+                .resizable(true)
                 .frame(panel_frame())
                 .show(ui, |ui| contents(shell, ui, false));
+            // Remembered so the drawer and a later resize agree about the width, and so
+            // the number survives the panel being rebuilt every frame.
+            shell.panel_width = response.response.rect.width();
         }
 
         transport(shell, ui, compact);
@@ -332,7 +347,7 @@ mod panel {
             shell.drawer_open = false;
         }
 
-        let width = (screen.width() * 0.86).min(PANEL_WIDTH);
+        let width = (screen.width() * 0.86).min(shell.panel_width);
         let left = screen.right() - width * t;
 
         egui::Area::new(egui::Id::new("fathom-drawer-panel"))
@@ -351,6 +366,12 @@ mod panel {
     }
 
     /// The panel's contents: which app this is, then every declared group.
+    ///
+    /// Built entirely from the schema, so declaring a parameter is still most of the work
+    /// of getting a control for it. What the schema now also carries is which controls are
+    /// worth showing first: a panel that shows everything at once shows nothing in
+    /// particular, and most apps have a handful of parameters worth reaching for and a
+    /// long tail that exists so the first few can be trusted.
     fn contents<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui, compact: bool) {
         let descriptor = Runner::<A>::descriptor();
 
@@ -374,11 +395,11 @@ mod panel {
                 .size(11.0)
                 .color(skin::MUTED),
         );
-        ui.add_space(4.0);
+        ui.add_space(6.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            // Groups in declaration order, parameters before the commands filed
-            // under the same heading.
+            // Groups in declaration order, parameters before the commands filed under the
+            // same heading.
             let mut groups: Vec<&'static str> = Vec::new();
             for p in descriptor.params {
                 if !groups.contains(&p.group) {
@@ -392,115 +413,132 @@ mod panel {
             }
 
             for group in groups {
-                skin::group_heading(ui, group);
+                if !skin::group_header(ui, group, true) {
+                    continue;
+                }
 
+                // The plain controls, then the tail behind a disclosure. Commands go with
+                // the plain ones: an app files a command under a group because it belongs
+                // beside those controls, and burying a Reset button would be perverse.
                 for (index, def) in descriptor.params.iter().enumerate() {
-                    if def.group != group {
-                        continue;
+                    if def.group == group && !def.advanced {
+                        parameter(shell, ui, index, def);
                     }
-                    let block = shell.runner.params_mut();
-                    match def.kind {
-                        ParamKind::Float | ParamKind::Int => {
-                            let is_int = def.kind == ParamKind::Int;
-                            let mut value = if is_int {
-                                block.u32(index) as f32
-                            } else {
-                                block.f32(index)
-                            };
-
-                            let span = def.max - def.min;
-                            let decimals = if is_int {
-                                0
-                            } else if span >= 20.0 {
-                                0
-                            } else if span >= 2.0 {
-                                2
-                            } else {
-                                3
-                            };
-                            skin::readout(ui, def.label, &format!("{value:.decimals$}"));
-
-                            let step = if is_int { Some(1.0) } else { None };
-                            if skin::needle_slider(ui, &mut value, def.min, def.max, step) {
-                                if is_int {
-                                    block.set_u32(index, value.round() as u32);
-                                } else {
-                                    block.set_f32(index, value);
-                                }
-                            }
-                        }
-                        ParamKind::Toggle => {
-                            let mut on = block.u32(index) != 0;
-                            let changed =
-                                skin::row(ui, def.label, |ui| skin::pill_toggle(ui, &mut on));
-                            if changed {
-                                block.set_u32(index, on as u32);
-                            }
-                        }
-                        ParamKind::Choice => {
-                            let mut value = block.u32(index) as usize;
-                            let current = def.options.get(value).copied().unwrap_or("");
-                            skin::row(ui, def.label, |ui| {
-                                egui::ComboBox::from_id_salt(def.name)
-                                    .selected_text(current)
-                                    .show_ui(ui, |ui| {
-                                        for (i, option) in def.options.iter().enumerate() {
-                                            ui.selectable_value(&mut value, i, *option);
-                                        }
-                                    });
-                            });
-                            if value as u32 != block.u32(index) {
-                                block.set_u32(index, value as u32);
-                            }
-                        }
-                    }
-                    ui.add_space(4.0);
                 }
+                commands(shell, ui, group, &descriptor);
 
-                // Selects first, then the buttons together on one row, the same
-                // arrangement the web panel uses.
-                for def in descriptor.commands.iter().filter(|c| c.group == group) {
-                    if def.options.is_empty() {
-                        continue;
-                    }
-                    let selected = shell.choice_of(def.name, def.initial as usize);
-                    let mut value = selected;
-                    skin::row(ui, def.label, |ui| {
-                        egui::ComboBox::from_id_salt(def.name)
-                            .selected_text(def.options.get(value).copied().unwrap_or(""))
-                            .show_ui(ui, |ui| {
-                                for (i, option) in def.options.iter().enumerate() {
-                                    ui.selectable_value(&mut value, i, *option);
-                                }
-                            });
-                    });
-                    if value != selected {
-                        shell.remember_choice(def.name, value);
-                        shell
-                            .runner
-                            .command(def.name, serde_json::json!({ "value": value }));
-                    }
-                    ui.add_space(4.0);
-                }
-
-                let buttons: Vec<_> = descriptor
-                    .commands
+                let advanced: Vec<usize> = descriptor
+                    .params
                     .iter()
-                    .filter(|c| c.group == group && c.options.is_empty())
+                    .enumerate()
+                    .filter(|(_, d)| d.group == group && d.advanced)
+                    .map(|(i, _)| i)
                     .collect();
-                if !buttons.is_empty() {
-                    ui.horizontal(|ui| {
-                        for def in buttons {
-                            if skin::action(ui, def.label).clicked() {
-                                shell.runner.command(def.name, serde_json::json!({}));
-                            }
-                        }
-                    });
+                if !advanced.is_empty() && skin::more_toggle(ui, group, advanced.len()) {
+                    for index in advanced {
+                        parameter(shell, ui, index, &descriptor.params[index]);
+                    }
                 }
-                ui.add_space(6.0);
+
+                ui.add_space(8.0);
             }
         });
     }
+
+    /// One parameter, drawn as whatever its kind calls for.
+    fn parameter<A: App>(
+        shell: &mut Shell<A>,
+        ui: &mut egui::Ui,
+        index: usize,
+        def: &ParamDef,
+    ) {
+        let block = shell.runner.params_mut();
+        match def.kind {
+            ParamKind::Float | ParamKind::Int => {
+                let is_int = def.kind == ParamKind::Int;
+                let mut value = if is_int { block.u32(index) as f32 } else { block.f32(index) };
+                // An int is a float with a step of one everywhere except in storage, which
+                // is what lets both share a control.
+                let step = if is_int { 1.0 } else { def.step };
+                if skin::scrubber(ui, def.label, &mut value, def.min, def.max, step) {
+                    if is_int {
+                        block.set_u32(index, value.round() as u32);
+                    } else {
+                        block.set_f32(index, value);
+                    }
+                }
+            }
+            ParamKind::Toggle => {
+                let mut on = block.u32(index) != 0;
+                if skin::row(ui, def.label, |ui| skin::pill_toggle(ui, &mut on)) {
+                    block.set_u32(index, on as u32);
+                }
+            }
+            ParamKind::Choice => {
+                let current = block.u32(index) as usize;
+                if let Some(picked) = choice(ui, def.name, def.label, def.options, current) {
+                    shell.runner.params_mut().set_u32(index, picked as u32);
+                }
+            }
+        }
+    }
+
+    /// A one-of-N control, segmented if the options fit and a dropdown if they do not.
+    ///
+    /// Measured rather than guessed from the option count: "Classic | Well" fits in a
+    /// narrow panel and five presets named like sentences do not, and which is which
+    /// depends on how wide the panel has been dragged.
+    fn choice(
+        ui: &mut egui::Ui,
+        key: &str,
+        label: &str,
+        options: &[&'static str],
+        selected: usize,
+    ) -> Option<usize> {
+        let widths = skin::segment_widths(ui, options);
+        if control::segments_fit(&widths, 22.0, ui.available_width()) {
+            ui.label(egui::RichText::new(label).size(11.0).color(skin::MUTED));
+            skin::segmented(ui, key, options, selected)
+        } else {
+            skin::dropdown(ui, key, label, options, selected)
+        }
+    }
+
+    /// The commands filed under one group: selects first, then the buttons on one row.
+    fn commands<A: App>(
+        shell: &mut Shell<A>,
+        ui: &mut egui::Ui,
+        group: &str,
+        descriptor: &fathom_core::AppDescriptor,
+    ) {
+        for def in descriptor.commands.iter().filter(|c| c.group == group) {
+            if def.options.is_empty() {
+                continue;
+            }
+            let selected = shell.choice_of(def.name, def.initial as usize);
+            if let Some(picked) = choice(ui, def.name, def.label, def.options, selected) {
+                shell.remember_choice(def.name, picked);
+                shell.runner.command(def.name, serde_json::json!({ "value": picked }));
+            }
+        }
+
+        let buttons: Vec<_> = descriptor
+            .commands
+            .iter()
+            .filter(|c| c.group == group && c.options.is_empty())
+            .collect();
+        if !buttons.is_empty() {
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                for def in buttons {
+                    if skin::action(ui, def.label).clicked() {
+                        shell.runner.command(def.name, serde_json::json!({}));
+                    }
+                }
+            });
+        }
+    }
+
     /// Play, step, recentre, and the frame counters.
     /// A floating bar rather than a docked one, the same arrangement the web panel uses:
     /// interface over simulation, and no strip of chrome eating height on a phone.

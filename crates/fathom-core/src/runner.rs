@@ -166,7 +166,8 @@ impl<A: App> Runner<A> {
             value: &value,
             viewport: self.viewport,
             camera: &mut self.camera,
-            params: Params::new(self.schema, &self.block),
+            schema: self.schema,
+            block: &mut self.block,
         };
         self.app.command(&mut ctx);
     }

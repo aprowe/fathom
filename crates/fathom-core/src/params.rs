@@ -42,6 +42,13 @@ pub struct ParamDef {
     pub group: &'static str,
     /// Labels for [`ParamKind::Choice`], indexed by value. Empty for other kinds.
     pub options: &'static [&'static str],
+    /// Whether this control is filed behind its group's disclosure rather than shown
+    /// with the rest.
+    ///
+    /// A panel that shows everything at once shows nothing in particular. Most apps have
+    /// a handful of parameters worth reaching for and a long tail that exists so the
+    /// first few can be trusted — this marks the tail, without hiding it.
+    pub advanced: bool,
 }
 
 impl ParamDef {
@@ -56,6 +63,7 @@ impl ParamDef {
             step: 0.0,
             group: "General",
             options: &[],
+            advanced: false,
         }
     }
 
@@ -70,6 +78,7 @@ impl ParamDef {
             step: 1.0,
             group: "General",
             options: &[],
+            advanced: false,
         }
     }
 
@@ -84,6 +93,7 @@ impl ParamDef {
             step: 1.0,
             group: "General",
             options: &[],
+            advanced: false,
         }
     }
 
@@ -103,12 +113,19 @@ impl ParamDef {
             step: 1.0,
             group: "General",
             options,
+            advanced: false,
         }
     }
 
     /// File this control under a named panel section.
     pub const fn group(mut self, group: &'static str) -> Self {
         self.group = group;
+        self
+    }
+
+    /// File this control behind its group's disclosure.
+    pub const fn advanced(mut self) -> Self {
+        self.advanced = true;
         self
     }
 
@@ -286,6 +303,17 @@ mod tests {
         assert_eq!(p.float(0), 1.5);
         assert!(p.toggle(1));
         assert_eq!(p.int(2), 2);
+    }
+
+    #[test]
+    fn a_control_is_shown_with_the_rest_unless_it_says_otherwise() {
+        let plain = ParamDef::float("a", "A", 0.0, 0.0, 1.0);
+        assert!(!plain.advanced, "controls should default to being shown");
+        assert!(plain.group("Physics").advanced().advanced);
+        // Every kind can be filed away, not only sliders.
+        assert!(ParamDef::int("b", "B", 1, 0, 4).advanced().advanced);
+        assert!(ParamDef::toggle("c", "C", true).advanced().advanced);
+        assert!(ParamDef::choice("d", "D", 0, &["x", "y"]).advanced().advanced);
     }
 
     #[test]
