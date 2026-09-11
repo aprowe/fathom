@@ -65,9 +65,9 @@ fn vs_main(
     } else {
         out.tint = vec3<f32>(0.62, 0.78, 1.0);
     }
-    // A star is a solid thing, not a mote in a cloud: it gets a bright core that
-    // saturates to white on its own, whatever the ramp says about its speed.
-    out.glow = select(0.22, 1.1, heft > 1.0);
+    // A heavy body is a solid thing, not a mote in a cloud: a hard-edged disc, bright
+    // enough to tone-map to near white whatever the ramp says about its speed.
+    out.glow = select(0.22, -2.5, heft > 1.0);
     if (heft > 1.0) {
         out.tint = mix(out.tint, vec3<f32>(1.0, 0.96, 0.9), 0.6);
     }
@@ -79,6 +79,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let d2 = dot(in.offset, in.offset);
     if (d2 > 1.0) {
         discard;
+    }
+    // A negative glow marks a heavy body: a flat disc with a one-pixel-ish soft edge.
+    if (in.glow < 0.0) {
+        let edge = 1.0 - smoothstep(0.82, 1.0, sqrt(d2));
+        let solid = -in.glow * edge;
+        return vec4<f32>(in.tint * solid, solid);
     }
     // A gaussian-ish core rather than a hard disc: overlapping points then sum into a
     // smooth glow instead of a field of visible circles.

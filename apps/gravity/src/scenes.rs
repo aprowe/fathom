@@ -11,6 +11,7 @@ pub type Vel = [f32; 2];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scene {
+    System,
     Binary,
     Disc,
     TwoGalaxies,
@@ -20,10 +21,16 @@ pub enum Scene {
 
 impl Scene {
     /// The order here is the order of the `scene` command's options.
-    pub const ALL: [Scene; 5] =
-        [Scene::Binary, Scene::Disc, Scene::TwoGalaxies, Scene::Ring, Scene::Uniform];
+    pub const ALL: [Scene; 6] = [
+        Scene::System,
+        Scene::Binary,
+        Scene::Disc,
+        Scene::TwoGalaxies,
+        Scene::Ring,
+        Scene::Uniform,
+    ];
     pub const LABELS: &'static [&'static str] =
-        &["Binary", "Disc", "Two galaxies", "Ring", "Uniform"];
+        &["Sun and planet", "Binary", "Disc", "Two galaxies", "Ring", "Uniform"];
 
     pub fn from_index(i: u32) -> Scene {
         Self::ALL[(i as usize).min(Self::ALL.len() - 1)]
@@ -37,6 +44,14 @@ const TOTAL_MASS: f32 = 1.0;
 
 /// How much of a disc's mass sits in its central body.
 const CORE_FRACTION: f32 = 0.35;
+
+/// The sun of the planetary scene. Light, deliberately: orbital speed goes with the
+/// square root of the central mass, and a planet that crosses the screen in a couple
+/// of seconds is a bullet, not a planet. At this mass the planet takes about twelve
+/// seconds to go round.
+pub const SUN_MASS: f32 = 0.12;
+pub const PLANET_MASS: f32 = 0.012;
+const PLANET_ORBIT: f32 = 0.72;
 
 /// The mass of each star in the binary. Two of them hold most of the scene's mass,
 /// which is what makes the swarm around them *orbit* rather than mill about.
@@ -72,6 +87,7 @@ pub fn generate(scene: Scene, n: usize, seed: u64) -> (Vec<Body>, Vec<Vel>) {
     let mut vels = Vec::with_capacity(n);
 
     match scene {
+        Scene::System => system(&mut rng, n, &mut bodies, &mut vels),
         Scene::Binary => binary(&mut rng, n, &mut bodies, &mut vels),
         Scene::Disc => disc(&mut rng, n, [0.0, 0.0], [0.0, 0.0], 1.0, TOTAL_MASS, &mut bodies, &mut vels),
         Scene::TwoGalaxies => {
@@ -143,6 +159,52 @@ fn disc(
             bodies[last] = [at[0], at[1], core, 0.0];
             vels[last] = drift;
         }
+    }
+}
+
+/// A sun, a planet in a circular orbit around it, a few moons around the planet, and a
+/// thin disc of dust around the sun that the planet ploughs through.
+///
+/// The dust is far lighter than the planet, so it decorates the orbit rather than
+/// perturbing it; the moons are lighter still.
+fn system(rng: &mut Lcg, n: usize, bodies: &mut Vec<Body>, vels: &mut Vec<Vel>) {
+    let sun = SUN_MASS;
+    let planet = PLANET_MASS;
+    let dust_mass = sun * 0.05;
+    let moon_mass = planet * 0.02;
+
+    bodies.push([0.0, 0.0, sun, 0.0]);
+    vels.push([0.0, 0.0]);
+
+    let r = PLANET_ORBIT;
+    let v = (sun / r).sqrt();
+    let at = [r, 0.0];
+    let drift = [0.0, v];
+    bodies.push([at[0], at[1], planet, 0.0]);
+    vels.push(drift);
+
+    let n_rest = n.saturating_sub(2);
+    let n_moons = (n_rest / 40).max(1).min(n_rest);
+    let n_dust = n_rest - n_moons;
+
+    for _ in 0..n_moons {
+        let a = rng.range(0.0, std::f32::consts::TAU);
+        let rm = rng.range(0.03, 0.07);
+        let m = rng.range(0.4, 1.0) / n_moons as f32 * moon_mass;
+        bodies.push([at[0] + rm * a.cos(), at[1] + rm * a.sin(), m, 0.0]);
+        let speed = (planet / rm).sqrt();
+        vels.push([drift[0] - a.sin() * speed, drift[1] + a.cos() * speed]);
+    }
+
+    for _ in 0..n_dust {
+        let a = rng.range(0.0, std::f32::consts::TAU);
+        // Even areal density between an inner clearing and the edge of the view.
+        let rd = (0.12 * 0.12 + rng.unit() * (1.1 * 1.1 - 0.12 * 0.12)).sqrt();
+        let m = rng.range(0.4, 1.0) / n_dust.max(1) as f32 * dust_mass;
+        bodies.push([rd * a.cos(), rd * a.sin(), m, 0.0]);
+        let enclosed = sun + dust_mass * ((rd * rd) / (1.1 * 1.1)).min(1.0);
+        let speed = (enclosed / rd).sqrt();
+        vels.push([-a.sin() * speed, a.cos() * speed]);
     }
 }
 
@@ -291,6 +353,19 @@ mod tests {
             .filter(|&m| m <= 0.1)
             .fold(0.0f32, f32::max);
         assert!(heaviest_light < BINARY_STAR_MASS / 100.0);
+    }
+
+    #[test]
+    fn the_system_is_a_sun_with_one_planet_going_round_it_slowly() {
+        let (bodies, vels) = generate(Scene::System, 2048, 5);
+        assert!((bodies[0][2] - SUN_MASS).abs() < 1e-6 && (bodies[1][2] - PLANET_MASS).abs() < 1e-6);
+        let r = (bodies[1][0] * bodies[1][0] + bodies[1][1] * bodies[1][1]).sqrt();
+        let v = ((vels[1][0] - vels[0][0]).powi(2) + (vels[1][1] - vels[0][1]).powi(2)).sqrt();
+        let period = std::f32::consts::TAU * r / v;
+        assert!(period > 8.0 && period < 20.0, "period {period}s");
+        // Everything else is dust: no third body comes near the planet's mass.
+        let third = bodies[2..].iter().map(|b| b[2]).fold(0.0f32, f32::max);
+        assert!(third < PLANET_MASS / 20.0);
     }
 
     #[test]

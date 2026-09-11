@@ -66,6 +66,9 @@
         document.getElementById('sim').hidden = true
       }
 
+      // The right button aims a body; the browser must not answer it with a menu.
+      document.getElementById('sim').addEventListener('contextmenu', (e) => e.preventDefault())
+
       try {
         await init()
         await start(document.getElementById('sim'))

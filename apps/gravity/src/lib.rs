@@ -28,9 +28,9 @@ fathom_core::params! {
     // both gestures are reachable without visiting the panel.
     MOUSE       => fathom_core::ParamDef::choice("mouse", "Left drag", 0, &["Pull", "Launch"]).group("Mouse"),
     WELL        => fathom_core::ParamDef::float("well", "Pull strength", 9.0, 0.0, 40.0).group("Mouse"),
-    // As a fraction of the whole scene's mass: the top of the range is a body that
-    // outweighs both stars of the binary put together.
-    LAUNCH_MASS => fathom_core::ParamDef::float("launchMass", "Launch mass", 0.1, 0.002, 0.8).group("Mouse"),
+    // The default is a planet; the top of the range is a body that
+    // outweighs the sun several times over.
+    LAUNCH_MASS => fathom_core::ParamDef::float("launchMass", "Launch mass", 0.012, 0.001, 0.5).group("Mouse"),
     POINT_SIZE  => fathom_core::ParamDef::float("pointSize", "Point size", 1.6, 0.5, 6.0).group("Render"),
     BRIGHTNESS  => fathom_core::ParamDef::float("brightness", "Brightness", 1.3, 0.2, 4.0).group("Render"),
     TRAILS      => fathom_core::ParamDef::toggle("trails", "Trails", true).group("Render"),
@@ -43,7 +43,7 @@ fathom_core::params! {
 const COUNTS: [u32; 4] = [2_048, 8_192, 20_480, 49_152];
 const COUNT_LABELS: &[&str] = &["2,048", "8,192", "20,480", "49,152"];
 const DEFAULT_COUNT_INDEX: u32 = 1;
-const DEFAULT_SCENE: Scene = Scene::Binary;
+const DEFAULT_SCENE: Scene = Scene::System;
 
 /// World units of velocity per world unit of drag. One: pull a body out by the distance
 /// it should cover in a second.

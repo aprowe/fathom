@@ -29,7 +29,7 @@ struct Uniforms {
 // Point radius as a multiple of the base size. A body heavier than the reference
 // grows with the square root of its mass, so a star reads as a disc rather than a
 // brighter dot; the swarm, far lighter than the reference, stays at the base size.
-const MASS_REF: f32 = 0.002;
+const MASS_REF: f32 = 0.0008;
 
 fn radius_for(mass: f32) -> f32 {
     return max(1.0, sqrt(mass / MASS_REF));
