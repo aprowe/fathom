@@ -96,8 +96,12 @@ drag crawl; a click on the readout lets you type.
 **[`apps/gravity`](apps/gravity)** — an exact 2D N-body simulation. Every body pulls on
 every other body, with no approximation: the force pass is O(n²) but tiled through
 workgroup shared memory, which is what lets tens of thousands of bodies run at frame
-rate. Drag inside the view to pull bodies toward the cursor; shift-drag or middle-drag to
-pan, scroll to zoom, <kbd>R</kbd> to reseed.
+rate. It opens on a binary: two heavy stars orbiting each other, each with a swarm bound
+to it and a ring around the pair. Right-drag anywhere to launch a new body — the line
+you draw is its velocity, the *Launch mass* slider is its weight, and it is drawn at the
+size its mass earns. Left-drag pulls bodies toward the cursor (or launches too, if you
+switch it in the panel); shift-drag or middle-drag to pan, scroll to zoom, <kbd>R</kbd>
+to reseed.
 
 **[`apps/ecp-life2`](apps/ecp-life2)** — particle life with relational colour energy.
 Each particle carries a continuous colour on a circle, and how two particles interact is
@@ -122,7 +126,7 @@ cargo test --workspace
 
 The suites that matter most run the real compute shaders and check them against a CPU
 statement of what they should produce: gravity's tiled force kernel against a plain
-O(n²) sum at N=64, and ecp-life2's whole step against a closed-form total energy. A
+O(n²) sum at N=256, and ecp-life2's whole step against a closed-form total energy. A
 tiling bug drops or double-counts bodies while still *looking* plausible, which is
 exactly the kind of thing an eye test misses. GPU tests skip themselves when no adapter
 is available.

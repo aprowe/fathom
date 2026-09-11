@@ -45,6 +45,8 @@ pub struct Shell<A: App> {
     /// Whether the pointer was down over the viewport last frame, so a move can be
     /// reported as a drag rather than a hover.
     dragging: bool,
+    /// Which button began the drag: 0 left, 1 middle, 2 right, as the DOM numbers them.
+    drag_button: u8,
     /// The option each command-select is showing. Commands are fire-and-forget, so
     /// unlike parameters they have no stored value to read back.
     command_choice: Vec<(&'static str, usize)>,
@@ -79,6 +81,7 @@ impl<A: App> Shell<A> {
             device: render_state.device.clone(),
             paused: false,
             dragging: false,
+            drag_button: 0,
             command_choice: Vec::new(),
             drawer_open: false,
             panel_width: panel::DEFAULT_WIDTH,
@@ -211,19 +214,32 @@ mod input {
             MouseEvent { x, y, button, buttons, shift, ctrl, alt }
         };
 
+        // The runner reads DOM conventions: a button index on the event, and a bitmask
+        // of held buttons where left is 1, right is 2 and middle is 4.
+        let mask = |button: u8| match button {
+            1 => 0b100,
+            2 => 0b010,
+            _ => 0b001,
+        };
+
         if let Some(p) = pointer {
             if response.drag_started() {
+                let button = if response.drag_started_by(egui::PointerButton::Secondary) {
+                    2
+                } else if response.drag_started_by(egui::PointerButton::Middle) {
+                    1
+                } else {
+                    0
+                };
                 shell.dragging = true;
-                shell.runner.input(InputEvent::MousePressed(mouse(p, 0, 1)));
+                shell.drag_button = button;
+                shell.runner.input(InputEvent::MousePressed(mouse(p, button, mask(button))));
             } else if response.dragged() {
-                // egui reports the middle button separately; the runner reads the DOM
-                // bitmask, where bit 2 is the middle button.
-                let middle = ui.input(|i| i.pointer.middle_down());
-                let buttons = if middle { 0b100 } else { 0b1 };
-                shell.runner.input(InputEvent::MouseDragged(mouse(p, 0, buttons)));
+                let button = shell.drag_button;
+                shell.runner.input(InputEvent::MouseDragged(mouse(p, button, mask(button))));
             } else if response.drag_stopped() {
                 shell.dragging = false;
-                shell.runner.input(InputEvent::MouseReleased(mouse(p, 0, 0)));
+                shell.runner.input(InputEvent::MouseReleased(mouse(p, shell.drag_button, 0)));
             } else if response.hovered() {
                 shell.runner.input(InputEvent::MouseMoved(mouse(p, 0, 0)));
             }

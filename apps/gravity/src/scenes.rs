@@ -11,6 +11,7 @@ pub type Vel = [f32; 2];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scene {
+    Binary,
     Disc,
     TwoGalaxies,
     Ring,
@@ -19,8 +20,10 @@ pub enum Scene {
 
 impl Scene {
     /// The order here is the order of the `scene` command's options.
-    pub const ALL: [Scene; 4] = [Scene::Disc, Scene::TwoGalaxies, Scene::Ring, Scene::Uniform];
-    pub const LABELS: &'static [&'static str] = &["Disc", "Two galaxies", "Ring", "Uniform"];
+    pub const ALL: [Scene; 5] =
+        [Scene::Binary, Scene::Disc, Scene::TwoGalaxies, Scene::Ring, Scene::Uniform];
+    pub const LABELS: &'static [&'static str] =
+        &["Binary", "Disc", "Two galaxies", "Ring", "Uniform"];
 
     pub fn from_index(i: u32) -> Scene {
         Self::ALL[(i as usize).min(Self::ALL.len() - 1)]
@@ -34,6 +37,12 @@ const TOTAL_MASS: f32 = 1.0;
 
 /// How much of a disc's mass sits in its central body.
 const CORE_FRACTION: f32 = 0.35;
+
+/// The mass of each star in the binary. Two of them hold most of the scene's mass,
+/// which is what makes the swarm around them *orbit* rather than mill about.
+pub const BINARY_STAR_MASS: f32 = 0.3;
+/// Half the separation of the pair.
+const BINARY_HALF_SEP: f32 = 0.42;
 
 /// A small linear congruential generator. A real RNG crate would work too, but this is
 /// three lines, has no wasm caveats, and gives reproducible scenes across targets.
@@ -63,6 +72,7 @@ pub fn generate(scene: Scene, n: usize, seed: u64) -> (Vec<Body>, Vec<Vel>) {
     let mut vels = Vec::with_capacity(n);
 
     match scene {
+        Scene::Binary => binary(&mut rng, n, &mut bodies, &mut vels),
         Scene::Disc => disc(&mut rng, n, [0.0, 0.0], [0.0, 0.0], 1.0, TOTAL_MASS, &mut bodies, &mut vels),
         Scene::TwoGalaxies => {
             let half = n / 2;
@@ -136,6 +146,62 @@ fn disc(
     }
 }
 
+/// Two heavy stars in a circular orbit about their common centre, each with a small
+/// swarm bound to it, and a wider ring around the pair.
+///
+/// The pair is the scene: the swarms are light enough that the stars' orbit is set by
+/// each other, so their period follows from the separation alone. Each star's swarm
+/// orbits *that star* at its local circular speed plus the star's own velocity, which
+/// is what keeps a swarm attached rather than left behind on the first pass.
+fn binary(rng: &mut Lcg, n: usize, bodies: &mut Vec<Body>, vels: &mut Vec<Vel>) {
+    let m = BINARY_STAR_MASS;
+    let d = BINARY_HALF_SEP;
+
+    let light = TOTAL_MASS - 2.0 * m;
+    let n_swarm = n.saturating_sub(2);
+    // Most of the light bodies belong to a star; the rest circle the pair from outside.
+    let n_ring = n_swarm / 5;
+    let n_each = (n_swarm - n_ring) / 2;
+    let swarm_mass = light * 0.25;
+    let ring_mass = light - 2.0 * swarm_mass;
+    let swarm_radius = 0.24;
+
+    // Each star drags its swarm with it, so what orbits the centre is the star *system*.
+    // Two equal systems of mass M a distance 2d apart, each on a circle of radius d:
+    // M v^2 / d = M^2 / (2d)^2, so v = sqrt(M / (4d)). Set the pair's speed from the
+    // star alone and it falls short, the orbit turns elliptical, and the swarms drain
+    // the pair's energy until the stars merge.
+    let system = m + swarm_mass;
+    let v = (system / (4.0 * d)).sqrt();
+    let stars = [([-d, 0.0], [0.0, -v]), ([d, 0.0], [0.0, v])];
+
+    for (at, drift) in stars {
+        bodies.push([at[0], at[1], m, 0.0]);
+        vels.push(drift);
+        for _ in 0..n_each {
+            let a = rng.range(0.0, std::f32::consts::TAU);
+            let r = rng.unit().sqrt() * swarm_radius + 0.03;
+            let mass = rng.range(0.4, 1.0) / n_each as f32 * swarm_mass;
+            bodies.push([at[0] + r * a.cos(), at[1] + r * a.sin(), mass, 0.0]);
+            // The star plus however much of the swarm lies inside this radius.
+            let enclosed = m + swarm_mass * (r / swarm_radius).powi(2).min(1.0);
+            let speed = (enclosed / r).sqrt();
+            vels.push([drift[0] - a.sin() * speed, drift[1] + a.cos() * speed]);
+        }
+    }
+
+    let n_ring = n - bodies.len();
+    for _ in 0..n_ring {
+        let a = rng.range(0.0, std::f32::consts::TAU);
+        let r = rng.range(1.0, 1.3);
+        let mass = rng.range(0.4, 1.0) / n_ring.max(1) as f32 * ring_mass;
+        bodies.push([r * a.cos(), r * a.sin(), mass, 0.0]);
+        // From out here the pair reads as one mass at the centre.
+        let speed = (TOTAL_MASS / r).sqrt();
+        vels.push([-a.sin() * speed, a.cos() * speed]);
+    }
+}
+
 /// Subtract the mass-weighted mean velocity so the system stays put.
 fn remove_net_momentum(bodies: &[Body], vels: &mut [Vel]) {
     let mut total_mass = 0.0f32;
@@ -203,6 +269,28 @@ mod tests {
         let c = generate(Scene::Disc, 512, 43);
         assert_eq!(a.0, b.0);
         assert_ne!(a.0, c.0);
+    }
+
+    #[test]
+    fn the_binary_is_two_heavy_stars_orbiting_each_other_and_a_light_swarm() {
+        let (bodies, vels) = generate(Scene::Binary, 2048, 5);
+        let heavy: Vec<usize> = (0..bodies.len()).filter(|&i| bodies[i][2] > 0.1).collect();
+        assert_eq!(heavy.len(), 2, "exactly two stars");
+        let (a, b) = (heavy[0], heavy[1]);
+        assert!((bodies[a][2] - bodies[b][2]).abs() < 1e-6, "equal masses");
+        // Opposite positions, opposite velocities: a circular orbit about the origin.
+        // (Only nearly opposite: the random swarm's net momentum is taken out of every
+        // body at the end, and that shifts the stars by the same small amount.)
+        assert!((bodies[a][0] + bodies[b][0]).abs() < 1e-5);
+        assert!((vels[a][1] + vels[b][1]).abs() < 0.05);
+        assert!(vels[a][1] * vels[b][1] < 0.0 && vels[a][1].abs() > 0.1, "the stars move apart");
+        // The swarm is light: no single particle is within a hundredth of a star.
+        let heaviest_light = bodies
+            .iter()
+            .map(|b| b[2])
+            .filter(|&m| m <= 0.1)
+            .fold(0.0f32, f32::max);
+        assert!(heaviest_light < BINARY_STAR_MASS / 100.0);
     }
 
     #[test]

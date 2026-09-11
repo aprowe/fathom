@@ -27,8 +27,16 @@ pub struct Uniforms {
     pub brightness: f32,
     pub n: u32,
     pub color_mode: u32,
-    pub _pad: [u32; 3],
+    pub launch_mass: f32,
+    pub launch_on: f32,
+    /// Brings `launch` to a 16-byte boundary, as WGSL requires of a `vec4`.
+    pub _pad: u32,
+    pub launch: [f32; 4],
 }
+
+/// Room kept past the scene's bodies for ones launched by hand. Once it is full, the
+/// oldest launched body is replaced rather than the newest refused.
+pub const LAUNCH_SLOTS: u32 = 64;
 
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
@@ -41,7 +49,11 @@ struct Accum {
 }
 
 pub struct Sim {
+    /// Live bodies: the scene's, plus any launched since.
     pub n: u32,
+    /// How many bodies the scene started with; launched ones sit after these.
+    pub base: u32,
+    launched: u32,
     pub scene: Scene,
     pub seed: u64,
 
@@ -324,6 +336,8 @@ impl Sim {
 
         Self {
             n,
+            base: n,
+            launched: 0,
             scene,
             seed: 0,
             bodies,
@@ -356,10 +370,23 @@ impl Sim {
         self.vel = vel;
         self.accel = accel;
         self.n = n;
+        self.base = n;
+        self.launched = 0;
         self.scene = scene;
         self.seed = seed;
         // Old trails belong to the old scene.
         self.accum = None;
+    }
+
+    /// Add one body at `pos` moving at `vel`. The buffers keep [`LAUNCH_SLOTS`] spare
+    /// entries past the scene, so this is two small writes and no reallocation.
+    pub fn launch(&mut self, queue: &wgpu::Queue, pos: [f32; 2], mass: f32, vel: [f32; 2]) {
+        let slot = self.base + self.launched % LAUNCH_SLOTS;
+        self.launched = self.launched.wrapping_add(1);
+        let body: [f32; 4] = [pos[0], pos[1], mass, 0.0];
+        queue.write_buffer(&self.bodies, u64::from(slot) * 16, bytemuck::bytes_of(&body));
+        queue.write_buffer(&self.vel, u64::from(slot) * 8, bytemuck::bytes_of(&vel));
+        self.n = self.n.max(slot + 1);
     }
 
     pub fn write_uniforms(&self, queue: &wgpu::Queue, uniforms: &Uniforms) {
@@ -520,7 +547,11 @@ fn allocate(
     n: u32,
     seed: u64,
 ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
-    let (bodies, vels) = scenes::generate(scene, n as usize, seed);
+    let (mut bodies, mut vels) = scenes::generate(scene, n as usize, seed);
+    // The spare slots are massless until launched into, so they pull on nothing; they
+    // are also past `n`, so the shaders never visit them.
+    bodies.resize(bodies.len() + LAUNCH_SLOTS as usize, [0.0; 4]);
+    vels.resize(vels.len() + LAUNCH_SLOTS as usize, [0.0; 2]);
     let bodies_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("gravity bodies"),
         contents: bytemuck::cast_slice(&bodies),
@@ -533,7 +564,7 @@ fn allocate(
     });
     let accel_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("gravity accelerations"),
-        size: (n as u64) * 8,
+        size: u64::from(n + LAUNCH_SLOTS) * 8,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });

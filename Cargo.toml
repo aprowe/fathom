@@ -18,3 +18,10 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Native gets the same settings; the size ones matter because the release build is also
+# the browser build, and every byte of it is downloaded before the first frame.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

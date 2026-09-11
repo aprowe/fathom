@@ -18,7 +18,19 @@ struct Uniforms {
     brightness: f32,
     n: u32,
     color_mode: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    // A body being aimed: mass, and whether one is.
+    launch_mass: f32,
+    launch_on: f32,
+    _pad: u32,
+    // Where it will start (xy) and where the drag has reached (zw), in world units.
+    launch: vec4<f32>,
+}
+
+// Point radius as a multiple of the base size. A body heavier than the reference
+// grows with the square root of its mass, so a star reads as a disc rather than a
+// brighter dot; the swarm, far lighter than the reference, stays at the base size.
+const MASS_REF: f32 = 0.002;
+
+fn radius_for(mass: f32) -> f32 {
+    return max(1.0, sqrt(mass / MASS_REF));
 }

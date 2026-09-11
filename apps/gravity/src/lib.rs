@@ -24,7 +24,13 @@ fathom_core::params! {
     // default a few times the spacing is what holds the scene together.
     SOFTENING   => fathom_core::ParamDef::float("softening", "Softening", 0.06, 0.002, 0.3).group("Physics"),
     TIMESCALE   => fathom_core::ParamDef::float("timescale", "Time scale", 1.0, 0.0, 3.0).group("Physics"),
-    WELL        => fathom_core::ParamDef::float("well", "Drag pull", 9.0, 0.0, 40.0).group("Physics"),
+    // What the left button does inside the view. The right button always launches, so
+    // both gestures are reachable without visiting the panel.
+    MOUSE       => fathom_core::ParamDef::choice("mouse", "Left drag", 0, &["Pull", "Launch"]).group("Mouse"),
+    WELL        => fathom_core::ParamDef::float("well", "Pull strength", 9.0, 0.0, 40.0).group("Mouse"),
+    // As a fraction of the whole scene's mass: the top of the range is a body that
+    // outweighs both stars of the binary put together.
+    LAUNCH_MASS => fathom_core::ParamDef::float("launchMass", "Launch mass", 0.1, 0.002, 0.8).group("Mouse"),
     POINT_SIZE  => fathom_core::ParamDef::float("pointSize", "Point size", 1.6, 0.5, 6.0).group("Render"),
     BRIGHTNESS  => fathom_core::ParamDef::float("brightness", "Brightness", 1.3, 0.2, 4.0).group("Render"),
     TRAILS      => fathom_core::ParamDef::toggle("trails", "Trails", true).group("Render"),
@@ -37,9 +43,16 @@ fathom_core::params! {
 const COUNTS: [u32; 4] = [2_048, 8_192, 20_480, 49_152];
 const COUNT_LABELS: &[&str] = &["2,048", "8,192", "20,480", "49,152"];
 const DEFAULT_COUNT_INDEX: u32 = 1;
+const DEFAULT_SCENE: Scene = Scene::Binary;
+
+/// World units of velocity per world unit of drag. One: pull a body out by the distance
+/// it should cover in a second.
+const LAUNCH_GAIN: f32 = 1.0;
 
 const COMMANDS: &[CommandDef] = &[
-    CommandDef::choice("scene", "Scene", Scene::LABELS).group("Simulation"),
+    CommandDef::choice("scene", "Scene", Scene::LABELS)
+        .group("Simulation")
+        .initial(DEFAULT_SCENE as u32),
     CommandDef::choice("count", "Bodies", COUNT_LABELS)
         .group("Simulation")
         .initial(DEFAULT_COUNT_INDEX),
@@ -52,10 +65,23 @@ pub struct Gravity {
     /// Where the drag-to-attract well is, and whether it is on. Matches the shader's
     /// `well` uniform: xy position, z strength, w enabled.
     well: [f32; 4],
+    /// A body being aimed: where it will start and where the drag has got to, both in
+    /// world space. `None` when nothing is being aimed.
+    launch: Option<([f32; 2], [f32; 2])>,
     /// Trails have to be cleared the moment they are switched off, or the last frame
     /// of streaks sits there forever.
     trails_were_on: bool,
     next_seed: u64,
+}
+
+/// The velocity a drag from `from` to `to` gives a launched body.
+///
+/// The drag *is* the velocity, drawn out from the body: where the line ends is where
+/// the body will be a second later. A slingshot (pull back to fire forward) is the
+/// other convention, and it is worse here, because what you are placing is a planet
+/// and the line you draw should be the direction it goes.
+pub fn launch_velocity(from: [f32; 2], to: [f32; 2]) -> [f32; 2] {
+    [(to[0] - from[0]) * LAUNCH_GAIN, (to[1] - from[1]) * LAUNCH_GAIN]
 }
 
 impl Gravity {
@@ -79,7 +105,13 @@ impl Gravity {
             brightness: params.float(BRIGHTNESS),
             n: self.sim.n,
             color_mode: params.int(COLOR_MODE),
-            _pad: [0; 3],
+            launch_mass: params.float(LAUNCH_MASS),
+            launch_on: self.launch.is_some() as u32 as f32,
+            _pad: 0,
+            launch: self
+                .launch
+                .map(|(a, b)| [a[0], a[1], b[0], b[1]])
+                .unwrap_or_default(),
         }
     }
 }
@@ -95,18 +127,19 @@ impl App for Gravity {
             &ctx.gpu.queue,
             ctx.gpu.format,
             COUNTS[DEFAULT_COUNT_INDEX as usize],
-            Scene::Disc,
+            DEFAULT_SCENE,
         );
         let mut app = Self {
             sim,
             well: [0.0; 4],
+            launch: None,
             trails_were_on: ctx.params.toggle(TRAILS),
             next_seed: 1,
         };
         app.sim.reseed(
             &ctx.gpu.device,
             &ctx.gpu.queue,
-            Scene::Disc,
+            DEFAULT_SCENE,
             COUNTS[DEFAULT_COUNT_INDEX as usize],
             app.next_seed,
         );
@@ -154,23 +187,36 @@ impl App for Gravity {
     }
 
     fn mouse_pressed(&mut self, e: &MouseEvent, ctx: &mut EventCtx<'_>) {
-        // Shift-drag is the framework's pan gesture, so the well stays out of its way.
-        if e.button == 0 && !e.shift {
-            let world = ctx.camera.screen_to_world(e.x, e.y, ctx.viewport);
+        // Shift-drag is the framework's pan gesture, so both of these stay out of its
+        // way; so is the middle button.
+        if e.shift || e.button == 1 {
+            return;
+        }
+        let world = ctx.camera.screen_to_world(e.x, e.y, ctx.viewport);
+        let launching = e.button == 2 || ctx.params.int(MOUSE) == 1;
+        if launching {
+            self.launch = Some((world, world));
+        } else {
             self.well = [world[0], world[1], ctx.params.float(WELL), 1.0];
         }
     }
 
     fn mouse_dragged(&mut self, e: &MouseEvent, ctx: &mut EventCtx<'_>) {
-        if self.well[3] > 0.5 {
-            let world = ctx.camera.screen_to_world(e.x, e.y, ctx.viewport);
+        let world = ctx.camera.screen_to_world(e.x, e.y, ctx.viewport);
+        if let Some((_, to)) = &mut self.launch {
+            *to = world;
+        } else if self.well[3] > 0.5 {
             self.well[0] = world[0];
             self.well[1] = world[1];
         }
     }
 
-    fn mouse_released(&mut self, _e: &MouseEvent, _ctx: &mut EventCtx<'_>) {
+    fn mouse_released(&mut self, _e: &MouseEvent, ctx: &mut EventCtx<'_>) {
         self.well[3] = 0.0;
+        if let Some((from, to)) = self.launch.take() {
+            let mass = ctx.params.float(LAUNCH_MASS);
+            self.sim.launch(&ctx.gpu.queue, from, mass, launch_velocity(from, to));
+        }
     }
 
     fn key_pressed(&mut self, e: &KeyEvent, ctx: &mut EventCtx<'_>) {

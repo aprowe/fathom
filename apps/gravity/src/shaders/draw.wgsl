@@ -13,6 +13,7 @@ struct VsOut {
     @builtin(position) position: vec4<f32>,
     @location(0) offset: vec2<f32>,
     @location(1) tint: vec3<f32>,
+    @location(2) glow: f32,
 }
 
 // Cool where slow, hot where fast — the usual astro-image reading, and it makes the
@@ -47,7 +48,8 @@ fn vs_main(
     let clip = (body.xy - u.center) * u.scale;
     let corner = corners[vi];
     // point_size is a radius in device pixels; clip space spans the viewport in 2 units.
-    let offset = corner * u.point_size * 2.0 / u.viewport;
+    let heft = radius_for(body.z);
+    let offset = corner * u.point_size * heft * 2.0 / u.viewport;
 
     var out: VsOut;
     out.position = vec4<f32>(clip + offset, 0.0, 1.0);
@@ -63,6 +65,12 @@ fn vs_main(
     } else {
         out.tint = vec3<f32>(0.62, 0.78, 1.0);
     }
+    // A star is a solid thing, not a mote in a cloud: it gets a bright core that
+    // saturates to white on its own, whatever the ramp says about its speed.
+    out.glow = select(0.22, 1.1, heft > 1.0);
+    if (heft > 1.0) {
+        out.tint = mix(out.tint, vec3<f32>(1.0, 0.96, 0.9), 0.6);
+    }
     return out;
 }
 
@@ -74,6 +82,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     // A gaussian-ish core rather than a hard disc: overlapping points then sum into a
     // smooth glow instead of a field of visible circles.
-    let falloff = exp(-d2 * 3.5) * 0.22;
+    let falloff = exp(-d2 * 3.5) * in.glow;
     return vec4<f32>(in.tint * falloff, falloff);
 }
