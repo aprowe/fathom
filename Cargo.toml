@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/gravity", "apps/gravity/src-tauri", "apps/ecp-life2"]
+members = ["crates/*", "apps/gravity", "apps/ecp-life2"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,8 +9,6 @@ license = "MIT"
 
 [workspace.dependencies]
 fathom-core = { path = "crates/fathom-core" }
-fathom-web = { path = "crates/fathom-web" }
-fathom-native = { path = "crates/fathom-native" }
 fathom-shell = { path = "crates/fathom-shell" }
 gravity = { path = "apps/gravity" }
 ecp-life2 = { path = "apps/ecp-life2" }

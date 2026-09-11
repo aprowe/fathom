@@ -227,9 +227,8 @@ impl ParamBlock {
 
     /// Write a float parameter by index constant.
     ///
-    /// An in-process interface edits the block directly through these; the web and Tauri
-    /// hosts instead ship a mirror of the whole block once a frame, because they are on
-    /// the other side of a language boundary.
+    /// The panel shares a process with the simulation, so a control writes straight into
+    /// the live block through these; nothing is mirrored or serialised in the frame.
     pub fn set_f32(&mut self, index: usize, value: f32) {
         if let Some(word) = self.words.get_mut(index) {
             *word = value.to_bits();

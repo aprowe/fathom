@@ -1,24 +1,18 @@
 //! An egui shell for fathom apps: one window, no web technology.
 //!
-//! This is a third host for the same [`fathom_core::App`] trait, alongside the wasm and
-//! Tauri ones — and the app crate it runs is byte-for-byte the one they run. What
-//! changes is only who draws the interface.
+//! The shell owns a [`Runner`] and draws the panel around it. The panel is Rust, drawn
+//! by egui into the same window and with the same wgpu device as the simulation, so:
 //!
-//! The Tauri host buys a real webview for the panel, and pays for it: two windows on
-//! Windows, an IPC hop for every parameter, and a parameter *mirror* on each side of a
-//! language boundary. Here the panel is Rust, drawn by egui into the same window and
-//! with the same wgpu device as the simulation. So:
-//!
-//! * one window, which means the taskbar, alt-tab and its preview thumbnail, snapping
-//!   and per-monitor DPI all work because the OS is not being tricked;
+//! * there is one window, which means the taskbar, alt-tab and its preview thumbnail,
+//!   snapping and per-monitor DPI all work because the OS is not being tricked;
 //! * a slider writes straight into the live parameter block — no mirror, no IPC, no
 //!   serialisation anywhere in the frame;
 //! * the same shell compiles to the browser through eframe, where egui draws to a
-//!   canvas, so this host covers both targets on its own.
+//!   canvas, so one host covers both targets.
 //!
 //! The simulation renders into an offscreen texture that the panel then shows as an
 //! image. That is what keeps the app's `draw` unchanged: it still receives a target view
-//! and renders into it, exactly as it does when that view is a swapchain.
+//! and renders into it, exactly as it would if that view were a swapchain.
 
 pub mod control;
 pub mod skin;
@@ -190,9 +184,9 @@ impl<A: App> eframe::App for Shell<A> {
 mod input {
     use super::*;
 
-    /// Turn egui's pointer and keyboard state into the same [`InputEvent`]s the web and
-    /// Tauri hosts send. Coordinates are viewport-local device pixels, which is what the
-    /// camera expects.
+    /// Turn egui's pointer and keyboard state into the [`InputEvent`]s the runner
+    /// consumes. Coordinates are viewport-local device pixels, which is what the camera
+    /// expects.
     pub fn forward<A: App>(
         shell: &mut Shell<A>,
         ui: &egui::Ui,
@@ -279,8 +273,8 @@ mod panel {
 
     /// The whole interface, built from the app's declared schema.
     ///
-    /// This is the Rust twin of `<AutoControls/>` in the React host, and it is the same
-    /// bargain: declaring a parameter is most of the work of getting a control for it.
+    /// Declaring a parameter is most of the work of getting a control for it: the panel
+    /// is generated from the schema, grouped as declared.
     ///
     /// Docked beside the simulation on a wide screen; a drawer that slides in over it on
     /// a narrow one, because a docked column would take half a phone screen from the
@@ -316,7 +310,7 @@ mod panel {
     /// The panel as a drawer: it slides in over the simulation and retracts again.
     ///
     /// It overlays rather than pushing the viewport aside. That is not only to match the
-    /// web panel — the simulation's target texture is sized from the central panel, so a
+    /// web panel â€” the simulation's target texture is sized from the central panel, so a
     /// drawer that pushed would reallocate that texture, and the trail buffer with it, on
     /// every frame of the slide.
     fn drawer<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui) {

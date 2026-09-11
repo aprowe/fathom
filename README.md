@@ -1,38 +1,37 @@
 # fathom
 
-A framework for **GPU simulation apps with an interface around them**, written once and
-run on two targets:
+A framework for **GPU simulation apps with an interface around them**, in Rust, written
+once and run on two targets from the same crate:
 
-- **Web** — the app compiled to wasm, drawing into a `<canvas>` through WebGPU.
-- **Native** — a Tauri window whose transparent webview *is* the interface, floating over
-  a borderless wgpu window that the interface tells where to draw.
+- **Native** — one window. The panel is drawn by egui beside the simulation, on the same
+  wgpu device, in the same process.
+- **Web** — the same shell compiled to wasm. egui draws into a canvas and wgpu talks to
+  WebGPU. The only HTML is a page whose whole job is to hand egui a canvas.
 
-The panel is the same React code on both. That is enforced by a type, not by discipline:
-everything the interface can do to a simulation goes through one `FathomHost` interface
-with two implementations.
+Every app is a small crate implementing one trait. The framework supplies the window,
+the surface, the clock, the camera, pan and zoom, the transport, the panel and both
+targets.
 
 ```bash
-# web
+# desktop
+cargo run --release -p gravity --bin gravity-egui
+cargo run --release -p ecp-life2 --bin ecp-life2-egui
+
+# browser (WebGPU: Chrome/Edge 113+, Safari 26, Firefox with dom.webgpu.enabled)
 cd apps/gravity && wasm-pack build --target web --out-dir pkg --release
-cd ui && npm run dev
-
-# native (Windows)
-cd apps/gravity/src-tauri && npx tauri dev
-
-# one self-contained HTML file, wasm and all
-python apps/gravity/build-artifact.py
+python -m http.server 8099        # then open http://localhost:8099/web/
 ```
 
 ## Writing an app
 
-An app is one Rust crate. The lifecycle is openFrameworks-shaped — `setup`, `update`,
-`draw`, plus input callbacks that default to doing nothing, so you only write the ones
-you care about.
+The lifecycle is openFrameworks-shaped — `setup`, `update`, `draw`, plus input callbacks
+that default to doing nothing, so you only write the ones you care about.
 
 ```rust
 fathom_core::params! {
     G      => ParamDef::float("g", "Gravity", 1.0, 0.0, 4.0).group("Physics"),
     TRAILS => ParamDef::toggle("trails", "Trails", true).group("Render"),
+    FADE   => ParamDef::float("fade", "Trail length", 0.9, 0.5, 0.99).group("Render").advanced(),
 }
 
 impl App for Gravity {
@@ -43,92 +42,98 @@ impl App for Gravity {
     fn draw(&mut self, ctx: &mut DrawCtx<'_>) { /* record into ctx.encoder */ }
 
     fn mouse_dragged(&mut self, e: &MouseEvent, ctx: &mut EventCtx<'_>) { /* optional */ }
+    fn command(&mut self, ctx: &mut CommandCtx<'_>) { /* buttons and selects */ }
 }
 ```
 
-`params!` produces both the schema the interface reads and the index constants the app
-reads, from one declaration, so the two cannot drift apart. Declaring a parameter is
-most of the work of getting a slider: `<AutoControls/>` builds the whole panel from the
-schema, grouped as declared.
+`params!` produces both the schema the panel reads and the index constants the app
+reads, from one declaration, so the two cannot drift apart. Declaring a parameter is most
+of the work of getting a control for it: the panel is generated from the schema, grouped
+as declared, with `.advanced()` controls filed behind each group's disclosure.
 
-Pan, zoom and the transport controls are framework behaviour — every app gets them
-without writing any code.
+Commands are the things an app cannot express as a number — a Reset button, a scene
+select. `CommandCtx` is the one context that can *write* parameters, because applying a
+preset means moving the sliders. Everywhere else the panel is the author of those values
+and the app only reads them, so an app never fights the widget the user is holding.
 
-## How the two targets fit together
+## How it fits together
 
 ```
-            React panel + @fathom/ui          ← identical on both targets
-                     │
-                FathomHost                    ← one interface, two implementations
-          ┌──────────┴───────────┐
-      WebHost                NativeHost
-     (wasm calls)           (Tauri commands)
-          │                       │
-     fathom-web              fathom-native
-          └──────────┬────────────┘
-                fathom-core                   ← Runner: the loop, shared
-                     │
-                 your App
+                 fathom-shell            ← egui panel + offscreen sim texture
+              (eframe: winit/wgpu natively, a canvas on web)
+                       │
+                  fathom-core            ← Runner: the loop, camera, clock, params
+                       │
+                    your App
 ```
 
-`fathom-core` owns the frame loop, the camera, the clock and the parameter block. The
-two hosts only manage a surface and marshal messages, which is what keeps the targets
-from drifting apart.
+`fathom-core` owns the frame loop, the camera, the clock and the parameter block, and
+knows nothing about windows. `fathom-shell` owns a `Runner` and draws around it.
 
-**The viewport.** `<SimViewport/>` renders a transparent div, measures itself, and reports
-its device-pixel rect. On web that sizes a canvas. On native it moves a borderless wgpu
-window that the Tauri window **owns**, so the two stay stacked and minimise together.
+**The viewport.** The simulation renders into an offscreen texture that the panel then
+shows as an image. That is what keeps an app's `draw` unchanged between targets: it
+receives a target view and renders into it, exactly as it would if the view were a
+swapchain. The texture is re-registered with egui when the viewport resizes.
 
-A child window inside the Tauri window would have been tidier — the OS would clip and
-move it for free — but it cannot work: a transparent WRY window is created with
-`WS_EX_NOREDIRECTIONBITMAP` and has no redirection surface, so a child HWND holding a
-DXGI swapchain is never composited into it. It sits there correctly positioned, visible
-by every API measure, drawing nothing anyone can see.
+**Parameters** live in one flat, uniform-friendly block. Because the panel and the
+simulation share a process, a slider writes straight into the live block — there is no
+mirror, no IPC, and nothing serialised anywhere in the frame.
 
-**Input** is captured in the DOM on both targets. Natively the transparent webview is the
-topmost layer, so pointer and key events land in React exactly as they do on web. One
-input path, no platform branching.
+**Layout.** On a wide screen the panel docks beside the simulation and can be resized.
+Below 760pt it becomes a drawer that slides in over the simulation, because a docked
+column would take half a phone screen from the thing it controls. The transport is a
+floating bar in both layouts.
 
-**Parameters** live in one flat block. Controls write into a `Float32Array` mirror — no
-React re-render per slider frame — and the host flushes the whole block once per frame:
-a zero-copy write into wasm memory on web, one small IPC message on native.
+**The skin.** egui gives itself away by its typeface, its widget shapes and a flat grey
+palette; `skin.rs` replaces all three. IBM Plex is embedded (OFL), so neither build
+fetches anything at runtime. Sliders are drawn rather than configured — a row that *is*
+the reading, with a bright edge where the value falls — and drags are relative, so a
+slider you touch does not lose its value before you have moved a pixel. Shift makes a
+drag crawl; a click on the readout lets you type.
 
-## The example: 2D gravity
+## The apps
 
-`apps/gravity` is an exact N-body simulation. Every body pulls on every other body, with
-no approximation: the force pass is O(n²) but tiled through workgroup shared memory, which
-is what lets tens of thousands of bodies run at frame rate. Force and integration are
-separate passes, so a Barnes-Hut or grid accelerator can replace the first without
-reshaping the app.
+**[`apps/gravity`](apps/gravity)** — an exact 2D N-body simulation. Every body pulls on
+every other body, with no approximation: the force pass is O(n²) but tiled through
+workgroup shared memory, which is what lets tens of thousands of bodies run at frame
+rate. Drag inside the view to pull bodies toward the cursor; shift-drag or middle-drag to
+pan, scroll to zoom, <kbd>R</kbd> to reseed.
 
-Drag inside the view to pull bodies toward the cursor. Shift-drag or middle-drag to pan,
-scroll to zoom, press <kbd>R</kbd> to reseed.
+**[`apps/ecp-life2`](apps/ecp-life2)** — particle life with relational colour energy.
+Each particle carries a continuous colour on a circle, and how two particles interact is
+a smooth surface over the *pair* of their colours. The part of that surface that does
+net work is paid for, locally and in the same step, out of energy stored in the colour
+mismatch between neighbours. Its README goes into the physics and the tests that pin it.
 
 ## Layout
 
 ```
 crates/fathom-core     the App trait, params, camera, clock, Runner
-crates/fathom-web      wasm host: a WebGPU canvas driven from JavaScript
-crates/fathom-native   Tauri host: the wgpu render window and its thread
-packages/fathom-ui     @fathom/ui — SimViewport, Panel, Toolbar, controls
-apps/gravity           the example: sim crate, React panel, Tauri shell
+crates/fathom-shell    the egui shell: panel, skin, drawer, native and web entry points
+apps/gravity           N-body gravity
+apps/ecp-life2         particle life with a colour-energy ledger
 ```
 
 ## Tests
 
 ```bash
-cargo test --workspace   # params, camera, clock, scenes, and a real GPU check
-npm test                 # parameter mirror, viewport rects, host selection
+cargo test --workspace
 ```
 
-The GPU test dispatches the tiled force kernel at N=64 and compares it against a plain
-CPU sum. A tiling bug drops or double-counts bodies while still *looking* plausible,
-which is exactly the kind of thing an eye test misses. It skips itself when no adapter is
-available.
+The suites that matter most run the real compute shaders and check them against a CPU
+statement of what they should produce: gravity's tiled force kernel against a plain
+O(n²) sum at N=64, and ecp-life2's whole step against a closed-form total energy. A
+tiling bug drops or double-counts bodies while still *looking* plausible, which is
+exactly the kind of thing an eye test misses. GPU tests skip themselves when no adapter
+is available.
 
 ## Status
 
-The native render surface is implemented for Windows. macOS (an `NSView` subview, which
-does not have the composition problem Windows has) and Linux sit behind the same
-`OverlaySurface` interface and are not filled in yet; the web target works everywhere
-WebGPU does.
+Desktop is built and verified on Windows (Vulkan); the shell is eframe, so macOS and
+Linux should follow without changes but have not been checked here. The web build is
+verified in Chrome. Firefox and Safari need WebGPU enabled.
+
+## License
+
+MIT. The bundled IBM Plex fonts are under the SIL Open Font License, see
+`crates/fathom-shell/fonts/OFL.txt`.

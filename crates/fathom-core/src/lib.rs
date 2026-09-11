@@ -4,12 +4,13 @@
 //! input callbacks) and declares its parameters with [`params!`]. The framework runs it
 //! on two targets from the same source:
 //!
-//! * **web** — compiled to wasm, rendering into a canvas through WebGPU
-//! * **native** — a Tauri window whose transparent webview is the interface, floating
-//!   over a wgpu child window that the interface tells where to draw
+//! * **native** — one window, the panel drawn by egui beside the simulation, both on
+//!   the same wgpu device
+//! * **web** — the same shell compiled to wasm, egui drawing into a canvas and wgpu
+//!   talking to WebGPU
 //!
 //! Nothing in this crate knows which of those is happening. That is the point: the
-//! [`Runner`] owns the loop, and the two hosts only manage a surface.
+//! [`Runner`] owns the loop, and the shell only manages a surface and draws a panel.
 
 pub mod app;
 pub mod camera;

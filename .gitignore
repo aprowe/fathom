@@ -1,7 +1,3 @@
 target/
-node_modules/
-dist/
 pkg/
 .DS_Store
-package-lock.json
-gravity-artifact.html
