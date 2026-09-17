@@ -29,15 +29,17 @@ pub struct CommandDef {
     /// Which option the select starts on, so the control agrees with the state the app
     /// actually set up with.
     pub initial: u32,
+    /// What the command does, for the control's tooltip. Empty means no tooltip.
+    pub description: &'static str,
 }
 
 impl CommandDef {
     pub const fn button(name: &'static str, label: &'static str) -> Self {
-        Self { name, label, group: "Actions", tab: "", options: &[], initial: 0 }
+        Self { name, label, group: "Actions", tab: "", options: &[], initial: 0, description: "" }
     }
 
     pub const fn choice(name: &'static str, label: &'static str, options: &'static [&'static str]) -> Self {
-        Self { name, label, group: "Actions", tab: "", options, initial: 0 }
+        Self { name, label, group: "Actions", tab: "", options, initial: 0, description: "" }
     }
 
     pub const fn group(mut self, group: &'static str) -> Self {
@@ -55,6 +57,12 @@ impl CommandDef {
         self.initial = initial;
         self
     }
+
+    /// Say what the command does, for the tooltip.
+    pub const fn describe(mut self, description: &'static str) -> Self {
+        self.description = description;
+        self
+    }
 }
 
 /// Everything the interface needs to build itself: sent to the UI once, at startup.
@@ -63,6 +71,43 @@ pub struct AppDescriptor {
     pub name: &'static str,
     pub params: &'static [ParamDef],
     pub commands: &'static [CommandDef],
+    /// Presets compiled into the binary, so the web build has some too. See
+    /// [`builtin_presets!`](crate::builtin_presets).
+    #[serde(skip)]
+    pub presets: Option<&'static include_dir::Dir<'static>>,
+    /// Whether the shell draws its own Presets section. An app that wants a different
+    /// arrangement turns this off and draws one from the same pieces in its panel hook.
+    pub presets_section: bool,
+}
+
+impl AppDescriptor {
+    pub const fn new(name: &'static str, params: &'static [ParamDef], commands: &'static [CommandDef]) -> Self {
+        Self { name, params, commands, presets: None, presets_section: true }
+    }
+
+    /// Ship these presets inside the binary.
+    pub const fn presets(mut self, dir: &'static include_dir::Dir<'static>) -> Self {
+        self.presets = Some(dir);
+        self
+    }
+
+    /// Leave the Presets section out of the generated panel.
+    pub const fn no_presets_section(mut self) -> Self {
+        self.presets_section = false;
+        self
+    }
+}
+
+/// The JSON presets under `presets/` next to the calling crate's `Cargo.toml`, compiled
+/// in. Hand the result to [`AppDescriptor::presets`].
+#[macro_export]
+macro_rules! builtin_presets {
+    () => {{
+        // The expansion names the `include_dir` crate, so it must be in scope.
+        use $crate::include_dir;
+        static PRESETS: include_dir::Dir<'static> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/presets");
+        &PRESETS
+    }};
 }
 
 /// Handed to [`App::setup`].

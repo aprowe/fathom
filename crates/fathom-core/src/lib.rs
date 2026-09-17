@@ -29,8 +29,10 @@ pub use clock::FrameStats;
 pub use event::{InputEvent, KeyEvent, Modifiers, MouseEvent, ScrollEvent};
 pub use gpu::Gpu;
 pub use params::{ParamBlock, ParamDef, ParamKind, Params};
-pub use runner::Runner;
+pub use runner::{Runner, RunnerParts};
 pub use viewport::{Viewport, ViewportRect};
 
 /// Re-exported so apps and hosts always agree on the wgpu version.
 pub use wgpu;
+/// Re-exported for [`builtin_presets!`].
+pub use include_dir;

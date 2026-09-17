@@ -29,13 +29,16 @@ that default to doing nothing, so you only write the ones you care about.
 
 ```rust
 fathom_core::params! {
-    G      => ParamDef::float("g", "Gravity", 1.0, 0.0, 4.0).group("Physics"),
+    G      => ParamDef::float("g", "Gravity", 1.0, 0.0, 4.0).group("Physics")
+                  .describe("The gravitational constant. Orbits tighten as it rises."),
     TRAILS => ParamDef::toggle("trails", "Trails", true).group("Render"),
     FADE   => ParamDef::float("fade", "Trail length", 0.9, 0.5, 0.99).group("Render").advanced(),
 }
 
 impl App for Gravity {
-    fn describe() -> AppDescriptor { /* name, SCHEMA, COMMANDS */ }
+    fn describe() -> AppDescriptor {
+        AppDescriptor::new("Gravity", SCHEMA, COMMANDS).presets(fathom_core::builtin_presets!())
+    }
 
     fn setup(ctx: &mut SetupCtx<'_>) -> Self { /* buffers and pipelines */ }
     fn update(&mut self, ctx: &mut UpdateCtx<'_>) { /* ctx.dt, ctx.params.float(G) */ }
@@ -51,10 +54,50 @@ reads, from one declaration, so the two cannot drift apart. Declaring a paramete
 of the work of getting a control for it: the panel is generated from the schema, grouped
 as declared, with `.advanced()` controls filed behind each group's disclosure.
 
+`.describe(…)` on a parameter or a command is its tooltip: what the number *does*, shown
+when the pointer rests on the control. Right-click resets a control to its default.
+
 Commands are the things an app cannot express as a number — a Reset button, a scene
 select. `CommandCtx` is the one context that can *write* parameters, because applying a
 preset means moving the sliders. Everywhere else the panel is the author of those values
 and the app only reads them, so an app never fights the widget the user is holding.
+
+### Past the paved road
+
+`App` describes a simulation and nothing else, which is what lets it run headless. The
+shell adds a second trait, `fathom_shell::ShellApp`, with every method defaulted; each
+one hands the app the same things the shell has. An app that wants none of it writes
+`impl ShellApp for Gravity {}`.
+
+```rust
+impl ShellApp for Gravity {
+    fn panel(&mut self, ui: &mut egui::Ui, ctx: &mut ShellCtx)       // widgets below the generated controls
+    fn overlay(&mut self, ui: &mut egui::Ui, ctx: &mut ShellCtx)     // draw over the simulation; ctx.to_screen(world)
+    fn frame(&mut self, egui: &egui::Context, frame: &mut eframe::Frame, ctx: &mut ShellCtx)  // once a frame, everything
+    fn intercept(&mut self, name: &str, value: &Value, ctx: &mut ShellCtx) -> bool  // every command, fathom.* included
+    fn save_state(&self) -> Value                                    // saved beside the params
+    fn load_state(&mut self, state: &Value, ctx: &mut ShellCtx)
+    fn file_received(&mut self, name: &str, bytes: &[u8], ctx: &mut ShellCtx)  // a drop or Open… that is not a preset
+}
+```
+
+`ShellCtx` carries the GPU, the viewport, the camera, the live parameter block (writable),
+the pause flag, the egui context, and `ctx.shell`, through which a hook asks the shell for
+anything it does on its own behalf: step, recentre, open the drawer, resize the panel,
+show the Save… or Open… dialog, list, load, save or delete presets, dispatch a command.
+The rule is that the framework never stands between an app and something egui or wgpu
+can do; if a hook is missing for it, that is a bug here, not a limit there.
+
+### Presets and files
+
+A preset is one JSON file — `{ "app", "params", "state" }` — where `state` is whatever
+`save_state` returned. The panel's Presets section has **Save…** and **Open…**, which are
+the OS dialogs natively and a download and a file picker on the web; dropping a file on
+the window opens it too. Below them is the list, merged from two places: JSON files under
+the app crate's `presets/` folder, compiled in with `builtin_presets!()` so the web build
+has them, and `presets/<app>/` under the working directory on desktop, where the typed
+name saves to. An app that wants a different arrangement calls `.no_presets_section()`
+on its descriptor and draws its own from the same pieces in `panel`.
 
 ## How it fits together
 
@@ -83,6 +126,10 @@ mirror, no IPC, and nothing serialised anywhere in the frame.
 Below 760pt it becomes a drawer that slides in over the simulation, because a docked
 column would take half a phone screen from the thing it controls. The transport is a
 floating bar in both layouts.
+
+**Hooks.** The panel, the overlay, the frame and every command go through `ShellApp`
+before the shell acts on them. The shell's own state is handed over borrowed apart
+(`Runner::parts`), so a hook sees the live block and the camera, not copies.
 
 **The skin.** egui gives itself away by its typeface, its widget shapes and a flat grey
 palette; `skin.rs` replaces all three. IBM Plex is embedded (OFL), so neither build

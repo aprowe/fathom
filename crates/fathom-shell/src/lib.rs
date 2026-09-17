@@ -15,18 +15,27 @@
 //! and renders into it, exactly as it would if that view were a swapchain.
 
 pub mod control;
-#[cfg(not(target_arch = "wasm32"))]
+pub mod files;
+pub mod hooks;
 pub mod presets;
 pub mod skin;
 
 use std::sync::Arc;
 
-use eframe::egui;
+pub use eframe;
+pub use eframe::egui;
 use egui_wgpu::wgpu;
 use fathom_core::{
-    App, Gpu, InputEvent, KeyEvent, MouseEvent, ParamDef, ParamKind, Runner, ScrollEvent,
-    Viewport,
+    Gpu, InputEvent, KeyEvent, MouseEvent, ParamDef, ParamKind, Runner, ScrollEvent, Viewport,
 };
+pub use files::FileEvent;
+pub use hooks::{Controls, ShellApp, ShellCtx};
+pub use presets::{Preset, Source};
+
+use hooks::Request;
+
+/// The extensions the Open… dialog shows and Save… suggests.
+const PRESET_EXTENSIONS: &[&str] = &["json"];
 
 /// The texture the simulation draws into, and its identity inside egui.
 struct Target {
@@ -36,14 +45,12 @@ struct Target {
     height: u32,
 }
 
-pub struct Shell<A: App> {
+pub struct Shell<A: ShellApp> {
     runner: Runner<A>,
     target: Option<Target>,
     /// Kept to register and release textures as the viewport resizes.
     renderer: Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>,
-    /// Whether the simulation is paused, mirrored here so the transport can show it.
     device: wgpu::Device,
-    paused: bool,
     /// Whether the pointer was down over the viewport last frame, so a move can be
     /// reported as a drag rather than a hover.
     dragging: bool,
@@ -57,18 +64,29 @@ pub struct Shell<A: App> {
     /// How wide the docked panel is, in points. Owned here rather than left to egui so
     /// the drawer can borrow the same number on a narrow screen.
     panel_width: f32,
-    /// The preset name being typed, the names on disk, and the last thing that happened
-    /// to them. Listed once at startup and again after every save or delete, not every
-    /// frame: a directory read per frame is a waste even when it is fast.
+    /// The preset name being typed, and the last thing that happened to a file.
     preset_name: String,
-    preset_names: Option<Vec<String>>,
-    preset_status: String,
+    status: String,
+    /// The presets the panel lists live in `controls`, where a hook can see them too.
+    /// Listed once at startup and again after every save or delete, not every frame: a
+    /// directory read per frame is a waste even when it is fast.
+    presets_listed: bool,
+    /// The hooks' way of asking the shell for things, and the dialogs in flight.
+    controls: Controls,
+    dialogs: files::Dialogs,
+    /// A width a hook asked for, waiting for the next frame's panel to pick it up.
+    panel_width_requested: Option<f32>,
+    /// Where the simulation was drawn last frame, in points, so a hook can map world
+    /// positions onto the screen.
+    viewport_rect: egui::Rect,
+    /// The context, kept so a command arriving outside a frame callback still has one.
+    egui: egui::Context,
     /// State of the panel's Randomize button. Seeded from the clock once; nothing here
     /// needs to be reproducible, it needs to be different each click.
     rng: u64,
 }
 
-impl<A: App> Shell<A> {
+impl<A: ShellApp> Shell<A> {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
         let render_state = cc
             .wgpu_render_state
@@ -85,26 +103,55 @@ impl<A: App> Shell<A> {
             adapter_info: render_state.adapter.get_info(),
         };
 
-        Ok(Self {
-            runner: Runner::new(gpu, Viewport::new(1, 1, cc.egui_ctx.pixels_per_point())),
+        Ok(Self::with_gpu(gpu, render_state.renderer.clone(), &cc.egui_ctx))
+    }
+
+    /// A shell over a device you already have, with no window. This is what the tests
+    /// use, and what anything embedding the panel in an egui context of its own would.
+    pub fn with_gpu(
+        gpu: Gpu,
+        renderer: Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>,
+        egui: &egui::Context,
+    ) -> Self {
+        let device = gpu.device.clone();
+        Self {
+            runner: Runner::new(gpu, Viewport::new(1, 1, egui.pixels_per_point())),
             target: None,
-            renderer: render_state.renderer.clone(),
-            device: render_state.device.clone(),
-            paused: false,
+            renderer,
+            device,
             dragging: false,
             drag_button: 0,
             command_choice: Vec::new(),
             drawer_open: false,
             panel_width: panel::DEFAULT_WIDTH,
             preset_name: String::new(),
-            preset_names: None,
-            preset_status: String::new(),
+            status: String::new(),
+            presets_listed: false,
+            controls: Controls { panel_width: panel::DEFAULT_WIDTH, ..Controls::default() },
+            dialogs: files::Dialogs::default(),
+            panel_width_requested: None,
+            viewport_rect: egui::Rect::ZERO,
+            egui: egui.clone(),
             rng: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0x9E37_79B9_7F4A_7C15)
                 | 1,
-        })
+        }
+    }
+
+    /// The runner, for a host that wants to drive it directly.
+    pub fn runner(&mut self) -> &mut Runner<A> {
+        &mut self.runner
+    }
+
+    /// The app's overlay, in a child that covers exactly `rect`.
+    fn draw_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let mut overlay = ui.new_child(
+            egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::LEFT)),
+        );
+        let egui = ui.ctx().clone();
+        self.hook(&egui, |app, ctx| app.overlay(&mut overlay, ctx));
     }
 
     /// The next random unit interval from a small xorshift.
@@ -186,9 +233,177 @@ impl<A: App> Shell<A> {
 
         self.target = Some(Target { view, id, width, height });
     }
+
+    /// Run one hook with a context over the runner's parts, then act on whatever it
+    /// asked for.
+    fn hook<R>(&mut self, egui: &egui::Context, f: impl FnOnce(&mut A, &mut ShellCtx<'_>) -> R) -> R {
+        self.list_presets();
+        self.controls.panel_width = self.panel_width;
+        self.controls.drawer_open = self.drawer_open;
+        let result = hooks::with_ctx(self.runner.parts(), egui, self.viewport_rect, &mut self.controls, f);
+        self.apply_requests();
+        result
+    }
+
+    fn apply_requests(&mut self) {
+        let requests = std::mem::take(&mut self.controls.requests);
+        for request in requests {
+            match request {
+                Request::Step => self.runner.step(),
+                Request::ResetCamera => self.runner.reset_camera(),
+                Request::Drawer(open) => self.drawer_open = open,
+                Request::PanelWidth(w) => self.set_panel_width(w),
+                Request::SaveDialog => self.save_dialog(),
+                Request::OpenDialog => self.open_dialog(),
+                Request::LoadPreset(name) => self.load_preset(&name),
+                Request::SavePreset(name) => self.save_preset(&name),
+                Request::DeletePreset(name) => self.delete_preset(&name),
+                Request::Command(name, value) => self.dispatch(&name, value),
+                Request::Status(text) => self.status = text,
+            }
+        }
+    }
+
+    /// The docked panel remembers its own width in egui's memory and writes it back at
+    /// the end of every show, so a new width has to go in before the next show begins.
+    /// Requests usually arrive from inside one; this parks the value until then.
+    fn set_panel_width(&mut self, width: f32) {
+        let width = width.clamp(panel::MIN_WIDTH, panel::MAX_WIDTH);
+        self.panel_width = width;
+        self.panel_width_requested = Some(width);
+    }
+
+    /// Every command goes through here: the app sees it first and may swallow it, then
+    /// the runner handles `fathom.*` and hands the rest to `App::command`.
+    fn dispatch(&mut self, name: &str, value: serde_json::Value) {
+        let egui = self.egui.clone();
+        let swallowed = self.hook(&egui, |app, ctx| app.intercept(name, &value, ctx));
+        if !swallowed {
+            self.runner.command(name, value);
+        }
+    }
+
+    fn list_presets(&mut self) {
+        if self.presets_listed {
+            return;
+        }
+        let descriptor = Runner::<A>::descriptor();
+        self.controls.presets = presets::list(descriptor.presets, &presets::default_root(), descriptor.name);
+        self.presets_listed = true;
+    }
+
+    /// The current parameters and the app's state as a preset document.
+    fn encode_preset(&self) -> String {
+        let descriptor = Runner::<A>::descriptor();
+        let state = self.runner.app().save_state();
+        presets::encode(descriptor.name, self.runner.schema(), self.runner.params(), state)
+    }
+
+    fn preset_folder(&self) -> std::path::PathBuf {
+        presets::default_root().join(presets::sanitise(Runner::<A>::descriptor().name))
+    }
+
+    fn save_dialog(&mut self) {
+        let name = if self.preset_name.trim().is_empty() { "preset" } else { self.preset_name.trim() };
+        let file_name = format!("{}.json", presets::sanitise(name));
+        let text = self.encode_preset();
+        let dir = Some(self.preset_folder()).filter(|d| d.is_dir());
+        self.dialogs.save(dir, file_name, PRESET_EXTENSIONS, text.into_bytes());
+    }
+
+    fn open_dialog(&mut self) {
+        let dir = Some(self.preset_folder()).filter(|d| d.is_dir());
+        self.dialogs.open(dir, PRESET_EXTENSIONS);
+    }
+
+    fn load_preset(&mut self, name: &str) {
+        let descriptor = Runner::<A>::descriptor();
+        match presets::read(descriptor.presets, &presets::default_root(), descriptor.name, name) {
+            Ok(text) => {
+                self.receive_file(&format!("{name}.json"), text.as_bytes());
+                self.preset_name = name.to_string();
+            }
+            Err(e) => self.status = format!("not loaded: {e}"),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_preset(&mut self, name: &str) {
+        let descriptor = Runner::<A>::descriptor();
+        let text = self.encode_preset();
+        match presets::save(&presets::default_root(), descriptor.name, name, &text) {
+            Ok(path) => {
+                self.status = format!("saved {}", path.display());
+                self.presets_listed = false;
+            }
+            Err(e) => self.status = format!("not saved: {e}"),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn delete_preset(&mut self, name: &str) {
+        let descriptor = Runner::<A>::descriptor();
+        self.status = match presets::delete(&presets::default_root(), descriptor.name, name) {
+            Ok(()) => format!("deleted {name}"),
+            Err(e) => format!("not deleted: {e}"),
+        };
+        self.presets_listed = false;
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn save_preset(&mut self, _name: &str) {
+        self.status = "no folder on the web: use Save… to download".into();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn delete_preset(&mut self, _name: &str) {
+        self.status = "built-in presets cannot be deleted".into();
+    }
+
+    /// A file from a dialog, a drop, or the preset list. A preset for this app is
+    /// applied; anything else is the app's to interpret.
+    fn receive_file(&mut self, name: &str, bytes: &[u8]) {
+        let descriptor = Runner::<A>::descriptor();
+        let egui = self.egui.clone();
+        let preset = std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|text| presets::decode(text).ok())
+            .filter(|doc| doc.is_for(descriptor.name));
+        match preset {
+            Some(doc) => {
+                let n = doc.apply(self.runner.schema(), self.runner.params_mut());
+                self.hook(&egui, |app, ctx| app.load_state(&doc.state, ctx));
+                self.status = format!("loaded {name}: {n} of {} parameters", descriptor.params.len());
+            }
+            None => {
+                self.hook(&egui, |app, ctx| app.file_received(name, bytes, ctx));
+                self.status = format!("passed {name} to the app");
+            }
+        }
+    }
+
+    /// Dialog results and dropped files, once a frame.
+    fn receive_files(&mut self, egui: &egui::Context) {
+        for event in self.dialogs.poll() {
+            match event {
+                FileEvent::Opened { name, bytes } => self.receive_file(&name, &bytes),
+                FileEvent::Saved { path } => {
+                    self.status = format!("saved {}", path.display());
+                    self.presets_listed = false;
+                }
+                FileEvent::Failed(why) => self.status = why,
+            }
+        }
+
+        // Dropped files are read through the same channel, because on the web reading
+        // one is asynchronous too.
+        for file in egui.input(|i| i.raw.dropped_files.clone()) {
+            self.dialogs.read_dropped(file);
+        }
+    }
 }
 
-impl<A: App> eframe::App for Shell<A> {
+impl<A: ShellApp> eframe::App for Shell<A> {
     /// The window is transparent nowhere: the simulation covers the whole canvas.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         let g = skin::GROUND;
@@ -200,10 +415,14 @@ impl<A: App> eframe::App for Shell<A> {
         ]
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // A simulation is never idle, so the shell drives repaints rather than waiting
         // for input the way an ordinary egui app would.
         ui.ctx().request_repaint();
+
+        let egui = ui.ctx().clone();
+        self.hook(&egui, |app, ctx| app.frame(&egui, frame, ctx));
+        self.receive_files(&egui);
 
         panel::draw(self, ui);
 
@@ -219,6 +438,7 @@ impl<A: App> eframe::App for Shell<A> {
 
                 let (rect, response) =
                     ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+                self.viewport_rect = rect;
                 input::forward(self, ui, rect, &response, ppp);
 
                 let now_ms = ui.input(|i| i.time) * 1000.0;
@@ -234,8 +454,10 @@ impl<A: App> eframe::App for Shell<A> {
                         egui::Color32::WHITE,
                     );
                 }
-            });
 
+                // Drawn after the image so it sits on top.
+                self.draw_overlay(ui, rect);
+            });
     }
 }
 
@@ -245,7 +467,7 @@ mod input {
     /// Turn egui's pointer and keyboard state into the [`InputEvent`]s the runner
     /// consumes. Coordinates are viewport-local device pixels, which is what the camera
     /// expects.
-    pub fn forward<A: App>(
+    pub fn forward<A: ShellApp>(
         shell: &mut Shell<A>,
         ui: &egui::Ui,
         rect: egui::Rect,
@@ -337,6 +559,8 @@ mod panel {
 
     /// What the docked panel starts at, and what the drawer uses.
     pub const DEFAULT_WIDTH: f32 = 340.0;
+    /// The docked panel's id salt, so its remembered width can be found and changed.
+    pub const DOCK_ID: &str = "fathom-controls";
     /// Narrow enough to give the simulation the screen; wide enough that a long label
     /// and its readout still fit on one row.
     pub const MIN_WIDTH: f32 = 280.0;
@@ -350,14 +574,21 @@ mod panel {
     /// Docked beside the simulation on a wide screen; a drawer that slides in over it on
     /// a narrow one, because a docked column would take half a phone screen from the
     /// thing it controls.
-    pub fn draw<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
+    pub fn draw<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
         let compact = ui.ctx().content_rect().width() < COMPACT_WIDTH;
 
         if compact {
             drawer(shell, ui);
         } else {
             shell.drawer_open = false;
-            let response = egui::Panel::right("controls")
+            if let Some(width) = shell.panel_width_requested.take() {
+                let id = egui::Id::new(DOCK_ID);
+                if let Some(mut state) = egui::containers::panel::PanelState::load(ui.ctx(), id) {
+                    state.outer_rect.min.x = state.outer_rect.max.x - width;
+                    ui.ctx().data_mut(|d| d.insert_persisted(id, state));
+                }
+            }
+            let response = egui::Panel::right(DOCK_ID)
                 .default_size(shell.panel_width)
                 .min_size(MIN_WIDTH)
                 .max_size(MAX_WIDTH)
@@ -384,7 +615,7 @@ mod panel {
     /// web panel â€” the simulation's target texture is sized from the central panel, so a
     /// drawer that pushed would reallocate that texture, and the trail buffer with it, on
     /// every frame of the slide.
-    fn drawer<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
+    fn drawer<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let screen = ctx.content_rect();
 
@@ -437,7 +668,7 @@ mod panel {
     /// worth showing first: a panel that shows everything at once shows nothing in
     /// particular, and most apps have a handful of parameters worth reaching for and a
     /// long tail that exists so the first few can be trusted.
-    fn contents<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui, compact: bool) {
+    fn contents<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui, compact: bool) {
         let descriptor = Runner::<A>::descriptor();
 
         ui.horizontal(|ui| {
@@ -465,8 +696,9 @@ mod panel {
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Presets and Randomize sit above the tabs: they act on the whole block, so
             // they belong to no tab and must be reachable from every one.
-            #[cfg(not(target_arch = "wasm32"))]
-            preset_section(shell, ui, &descriptor);
+            if descriptor.presets_section {
+                preset_section(shell, ui);
+            }
             ui.horizontal(|ui| {
                 if skin::action(ui, "Randomize")
                     .on_hover_text("Roll every unlocked parameter. Click a padlock to keep one where it is.")
@@ -540,6 +772,10 @@ mod panel {
 
                 ui.add_space(8.0);
             }
+
+            // Whatever the app wants below the generated controls.
+            let egui = ui.ctx().clone();
+            shell.hook(&egui, |app, ctx| app.panel(ui, ctx));
         });
     }
 
@@ -562,86 +798,89 @@ mod panel {
         ui.data_mut(|d| d.insert_persisted(id, locked));
     }
 
-    /// Save the whole parameter block under a typed name, and the names already saved
-    /// with a Load and a delete each. Files live under `presets/<app>/` in the working
-    /// directory; see [`presets`].
-    #[cfg(not(target_arch = "wasm32"))]
-    fn preset_section<A: App>(
-        shell: &mut Shell<A>,
-        ui: &mut egui::Ui,
-        descriptor: &fathom_core::AppDescriptor,
-    ) {
+    /// Save… and Open… as files, a typed name that saves into the folder, and the list
+    /// of what is available: built in and from the folder, merged. See [`presets`].
+    fn preset_section<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
         if !skin::group_header(ui, "Presets", true) {
             return;
         }
-        let root = presets::default_root();
-        let app = descriptor.name;
-        if shell.preset_names.is_none() {
-            shell.preset_names = Some(presets::list(&root, app));
-        }
+        shell.list_presets();
 
-        let mut save = false;
         ui.horizontal(|ui| {
-            let edit = egui::TextEdit::singleline(&mut shell.preset_name)
-                .hint_text("name")
-                .font(egui::FontId::proportional(12.0))
-                .desired_width(ui.available_width() - 56.0);
-            let response = ui.add(edit);
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                save = true;
+            if skin::action(ui, "Save…")
+                .on_hover_text(if cfg!(target_arch = "wasm32") {
+                    "Download the current parameters as a .json file."
+                } else {
+                    "Write the current parameters to a file of your choosing."
+                })
+                .clicked()
+            {
+                shell.save_dialog();
             }
-            if skin::action(ui, "Save").clicked() {
-                save = true;
+            if skin::action(ui, "Open…")
+                .on_hover_text("Load parameters from a .json file. Dropping one on the window does the same.")
+                .clicked()
+            {
+                shell.open_dialog();
             }
         });
+
+        // The folder is a native thing. On the web the list is what was built in, and
+        // a file you want to keep is a download.
+        let mut save = false;
+        if !cfg!(target_arch = "wasm32") {
+            ui.horizontal(|ui| {
+                let edit = egui::TextEdit::singleline(&mut shell.preset_name)
+                    .hint_text("name")
+                    .font(egui::FontId::proportional(12.0))
+                    .desired_width(ui.available_width() - 56.0);
+                let response = ui.add(edit);
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    save = true;
+                }
+                if skin::action(ui, "Save")
+                    .on_hover_text("Save into the presets folder under this name, so it appears in the list below.")
+                    .clicked()
+                {
+                    save = true;
+                }
+            });
+        }
         if save {
             let name = shell.preset_name.clone();
-            let schema = shell.runner.schema();
-            match presets::save(&root, app, &name, schema, shell.runner.params_mut()) {
-                Ok(path) => {
-                    shell.preset_status = format!("saved {}", path.display());
-                    shell.preset_names = None;
-                }
-                Err(e) => shell.preset_status = format!("not saved: {e}"),
-            }
+            shell.save_preset(&name);
         }
 
-        let names = shell.preset_names.clone().unwrap_or_default();
+        let listed = shell.controls.presets.clone();
         let mut load: Option<String> = None;
         let mut remove: Option<String> = None;
-        for name in &names {
+        for preset in &listed {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(name).size(12.0).color(skin::TEXT.gamma_multiply(0.92)));
+                ui.label(egui::RichText::new(&preset.name).size(12.0).color(skin::TEXT.gamma_multiply(0.92)));
+                if preset.source == Source::BuiltIn {
+                    ui.label(egui::RichText::new("built in").size(10.0).color(skin::MUTED));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if skin::action(ui, "×").on_hover_text("delete this preset").clicked() {
-                        remove = Some(name.clone());
+                    if preset.source == Source::Folder
+                        && skin::action(ui, "×").on_hover_text("delete this preset").clicked()
+                    {
+                        remove = Some(preset.name.clone());
                     }
                     if skin::action(ui, "Load").clicked() {
-                        load = Some(name.clone());
+                        load = Some(preset.name.clone());
                     }
                 });
             });
         }
         if let Some(name) = load {
-            let schema = shell.runner.schema();
-            match presets::load(&root, app, &name, schema, shell.runner.params_mut()) {
-                Ok(n) => {
-                    shell.preset_status = format!("loaded {name}: {n} of {} parameters", schema.len());
-                    shell.preset_name = name;
-                }
-                Err(e) => shell.preset_status = format!("not loaded: {e}"),
-            }
+            shell.load_preset(&name);
         }
         if let Some(name) = remove {
-            shell.preset_status = match presets::delete(&root, app, &name) {
-                Ok(()) => format!("deleted {name}"),
-                Err(e) => format!("not deleted: {e}"),
-            };
-            shell.preset_names = None;
+            shell.delete_preset(&name);
         }
 
-        if !shell.preset_status.is_empty() {
-            ui.label(egui::RichText::new(&shell.preset_status).size(11.0).color(skin::MUTED));
+        if !shell.status.is_empty() {
+            ui.label(egui::RichText::new(&shell.status).size(11.0).color(skin::MUTED));
         }
         ui.add_space(8.0);
     }
@@ -649,7 +888,7 @@ mod panel {
     /// One parameter, drawn as whatever its kind calls for, with two things every kind
     /// shares: a right-click puts it back to its default, and resting the pointer on it
     /// shows what it does.
-    fn parameter<A: App>(
+    fn parameter<A: ShellApp>(
         shell: &mut Shell<A>,
         ui: &mut egui::Ui,
         index: usize,
@@ -693,7 +932,7 @@ mod panel {
         });
     }
 
-    fn control_for<A: App>(
+    fn control_for<A: ShellApp>(
         shell: &mut Shell<A>,
         ui: &mut egui::Ui,
         index: usize,
@@ -752,7 +991,7 @@ mod panel {
     }
 
     /// The commands filed under one group: selects first, then the buttons on one row.
-    fn commands<A: App>(
+    fn commands<A: ShellApp>(
         shell: &mut Shell<A>,
         ui: &mut egui::Ui,
         group: &str,
@@ -763,9 +1002,13 @@ mod panel {
                 continue;
             }
             let selected = shell.choice_of(def.name, def.initial as usize);
-            if let Some(picked) = choice(ui, def.name, def.label, def.options, selected) {
+            let scoped = ui.scope(|ui| choice(ui, def.name, def.label, def.options, selected));
+            if !def.description.is_empty() {
+                scoped.response.on_hover_text(def.description);
+            }
+            if let Some(picked) = scoped.inner {
                 shell.remember_choice(def.name, picked);
-                shell.runner.command(def.name, serde_json::json!({ "value": picked }));
+                shell.dispatch(def.name, serde_json::json!({ "value": picked }));
             }
         }
 
@@ -778,8 +1021,14 @@ mod panel {
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 for def in buttons {
-                    if skin::action(ui, def.label).clicked() {
-                        shell.runner.command(def.name, serde_json::json!({}));
+                    let response = skin::action(ui, def.label);
+                    let response = if def.description.is_empty() {
+                        response
+                    } else {
+                        response.on_hover_text(def.description)
+                    };
+                    if response.clicked() {
+                        shell.dispatch(def.name, serde_json::json!({}));
                     }
                 }
             });
@@ -789,7 +1038,7 @@ mod panel {
     /// Play, step, recentre, and the frame counters.
     /// A floating bar rather than a docked one, the same arrangement the web panel uses:
     /// interface over simulation, and no strip of chrome eating height on a phone.
-    fn transport<A: App>(shell: &mut Shell<A>, ui: &mut egui::Ui, compact: bool) {
+    fn transport<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui, compact: bool) {
         let ctx = ui.ctx().clone();
 
         egui::Area::new(egui::Id::new("fathom-transport"))
@@ -798,20 +1047,19 @@ mod panel {
             .show(&ctx, |ui| {
                 floating_frame().show(ui, |ui| {
                     ui.horizontal(|ui| {
-                let label = if shell.paused { "Run" } else { "Pause" };
+                let paused = shell.runner.is_paused();
+                let label = if paused { "Run" } else { "Pause" };
                 if skin::action(ui, label).clicked() {
-                    shell.paused = !shell.paused;
-                    let command =
-                        if shell.paused { "fathom.pause" } else { "fathom.resume" };
-                    shell.runner.command(command, serde_json::Value::Null);
+                    let command = if paused { "fathom.resume" } else { "fathom.pause" };
+                    shell.dispatch(command, serde_json::Value::Null);
                 }
-                ui.add_enabled_ui(shell.paused, |ui| {
+                ui.add_enabled_ui(paused, |ui| {
                     if skin::action(ui, "Step").clicked() {
-                        shell.runner.command("fathom.step", serde_json::Value::Null);
+                        shell.dispatch("fathom.step", serde_json::Value::Null);
                     }
                 });
                 if skin::action(ui, "Recentre").clicked() {
-                    shell.runner.command("fathom.reset_camera", serde_json::Value::Null);
+                    shell.dispatch("fathom.reset_camera", serde_json::Value::Null);
                 }
 
                 ui.add_space(6.0);
@@ -835,7 +1083,7 @@ mod panel {
 
                 // A dot rather than a word carries the state at a glance; the word
                 // is there for anyone who needs it spelled out.
-                let (dot, word) = if shell.paused {
+                let (dot, word) = if shell.runner.is_paused() {
                     (skin::WARM, "Paused")
                 } else {
                     (skin::ACCENT, "Running")
@@ -878,7 +1126,7 @@ mod panel {
 
 /// Run an app in a native window.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn run_native<A: App>(title: &str) -> eframe::Result {
+pub fn run_native<A: ShellApp>(title: &str) -> eframe::Result {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
@@ -903,7 +1151,7 @@ pub fn run_native<A: App>(title: &str) -> eframe::Result {
 /// The same shell, the same panel, the same app: on this target eframe draws egui into
 /// the canvas and wgpu talks to WebGPU, so no part of the interface is HTML.
 #[cfg(target_arch = "wasm32")]
-pub async fn run_web<A: App>(
+pub async fn run_web<A: ShellApp>(
     canvas: web_sys::HtmlCanvasElement,
 ) -> Result<(), eframe::wasm_bindgen::JsValue> {
     eframe::WebRunner::new()
@@ -918,3 +1166,198 @@ pub async fn run_web<A: App>(
         .await
 }
 
+
+/// The hooks, exercised through a real shell over a real device with no window: each
+/// one must fire, see the runner's state, and have its requests honoured.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use fathom_core::{AppDescriptor, CommandDef, DrawCtx, ParamDef, SetupCtx, UpdateCtx};
+    use serde_json::{Value, json};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// What the probe app saw, shared with the test through an `Rc` because the shell
+    /// owns the app.
+    #[derive(Debug)]
+    struct Seen {
+        panel: u32,
+        overlay: u32,
+        overlay_rect: egui::Rect,
+        intercepted: Vec<String>,
+        state: Option<Value>,
+        files: Vec<(String, usize)>,
+    }
+
+    struct Probe {
+        seen: Rc<RefCell<Seen>>,
+    }
+
+    impl Default for Seen {
+        fn default() -> Self {
+            Self {
+                panel: 0,
+                overlay: 0,
+                overlay_rect: egui::Rect::ZERO,
+                intercepted: Vec::new(),
+                state: None,
+                files: Vec::new(),
+            }
+        }
+    }
+
+    thread_local! {
+        static SEEN: Rc<RefCell<Seen>> = Rc::default();
+    }
+
+    const SCHEMA: &[ParamDef] = &[
+        ParamDef::float("g", "Gravity", 1.0, 0.0, 4.0).describe("pull"),
+        ParamDef::toggle("trails", "Trails", true),
+    ];
+    const COMMANDS: &[CommandDef] = &[CommandDef::button("reset", "Reset").describe("start again")];
+
+    impl fathom_core::App for Probe {
+        fn describe() -> AppDescriptor {
+            AppDescriptor::new("Probe", SCHEMA, COMMANDS)
+        }
+        fn setup(_ctx: &mut SetupCtx<'_>) -> Self {
+            Self { seen: SEEN.with(Rc::clone) }
+        }
+        fn update(&mut self, _ctx: &mut UpdateCtx<'_>) {}
+        fn draw(&mut self, _ctx: &mut DrawCtx<'_>) {}
+    }
+
+    impl ShellApp for Probe {
+        fn panel(&mut self, ui: &mut egui::Ui, ctx: &mut ShellCtx<'_>) {
+            self.seen.borrow_mut().panel += 1;
+            ui.label("from the app");
+            // A hook writes a parameter, pauses, and asks the shell for things.
+            ctx.set_float(0, 2.5);
+            *ctx.paused = true;
+            ctx.shell.set_panel_width(400.0);
+            ctx.shell.status("hello from the panel hook");
+        }
+
+        fn overlay(&mut self, ui: &mut egui::Ui, ctx: &mut ShellCtx<'_>) {
+            let mut seen = self.seen.borrow_mut();
+            seen.overlay += 1;
+            seen.overlay_rect = ui.max_rect();
+            assert_eq!(ctx.viewport_rect, ui.max_rect());
+        }
+
+        fn intercept(&mut self, name: &str, _value: &Value, _ctx: &mut ShellCtx<'_>) -> bool {
+            self.seen.borrow_mut().intercepted.push(name.to_string());
+            name == "fathom.pause"
+        }
+
+        fn save_state(&self) -> Value {
+            json!({ "answer": 42 })
+        }
+
+        fn load_state(&mut self, state: &Value, _ctx: &mut ShellCtx<'_>) {
+            self.seen.borrow_mut().state = Some(state.clone());
+        }
+
+        fn file_received(&mut self, name: &str, bytes: &[u8], _ctx: &mut ShellCtx<'_>) {
+            self.seen.borrow_mut().files.push((name.to_string(), bytes.len()));
+        }
+    }
+
+    fn shell() -> Option<(Shell<Probe>, egui::Context)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+        .ok()?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("fathom shell test"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            trace: wgpu::Trace::Off,
+        }))
+        .ok()?;
+        let gpu = Gpu {
+            device: device.clone(),
+            queue,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            adapter_info: adapter.get_info(),
+        };
+        let renderer = egui_wgpu::Renderer::new(&device, gpu.format, egui_wgpu::RendererOptions::default());
+        let egui = egui::Context::default();
+        skin::install(&egui);
+        Some((Shell::with_gpu(gpu, Arc::new(egui::mutex::RwLock::new(renderer)), &egui), egui))
+    }
+
+    fn seen() -> Rc<RefCell<Seen>> {
+        SEEN.with(Rc::clone)
+    }
+
+    #[test]
+    fn every_hook_fires_and_its_requests_are_honoured() {
+        let Some((mut shell, egui)) = shell() else {
+            eprintln!("no GPU adapter: skipping");
+            return;
+        };
+        *seen().borrow_mut() = Seen::default();
+
+        // Intercept sees framework commands and can swallow them: pause is refused,
+        // step is not.
+        shell.dispatch("fathom.pause", Value::Null);
+        assert!(!shell.runner.is_paused(), "the app swallowed the pause");
+        shell.dispatch("reset", json!({}));
+        assert_eq!(seen().borrow().intercepted, vec!["fathom.pause", "reset"]);
+
+        // The panel hook is drawn below the generated controls and its requests land.
+        let input_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0)));
+        let input = egui::RawInput { screen_rect: input_rect, ..Default::default() };
+        let mut output = egui.run_ui(input, |ui| {
+            panel::draw(&mut shell, ui);
+            egui::CentralPanel::no_frame().show(ui, |ui| {
+                let rect = ui.available_rect_before_wrap();
+                shell.viewport_rect = rect;
+                shell.draw_overlay(ui, rect);
+            });
+        });
+        // Nothing here uploads the font atlas; egui asserts it was not forgotten.
+        output.textures_delta.clear();
+        {
+            let seen = seen();
+            let seen = seen.borrow();
+            assert_eq!(seen.panel, 1, "panel hook drawn once per frame");
+            assert_eq!(seen.overlay, 1, "overlay hook drawn once per frame");
+            assert!(seen.overlay_rect.width() > 100.0, "the overlay covers the viewport");
+        }
+        assert_eq!(shell.runner.params().f32(0), 2.5, "a hook can write a parameter");
+        assert!(shell.runner.is_paused(), "a hook can pause");
+        assert_eq!(shell.status, "hello from the panel hook");
+        // The docked panel reports its width after its contents are drawn, so a width
+        // asked for during a frame shows in the next one.
+        let mut output = egui.run_ui(egui::RawInput { screen_rect: input_rect, ..Default::default() }, |ui| {
+            panel::draw(&mut shell, ui);
+        });
+        output.textures_delta.clear();
+        assert_eq!(shell.panel_width, 400.0, "a hook can resize the panel");
+
+        // A preset for this app applies its params and hands the app its state.
+        let file = presets::encode("Probe", SCHEMA, &fathom_core::ParamBlock::from_defaults(SCHEMA), json!({ "answer": 42 }));
+        shell.receive_file("one.json", file.as_bytes());
+        assert_eq!(shell.runner.params().f32(0), 1.0, "the preset's params were applied");
+        assert_eq!(seen().borrow().state, Some(json!({ "answer": 42 })));
+
+        // Anything else — another app's preset, or not JSON at all — goes to the app.
+        shell.receive_file("other.json", br#"{ "app": "Other", "params": {} }"#);
+        shell.receive_file("notes.txt", b"hello");
+        assert_eq!(seen().borrow().files, vec![("other.json".to_string(), 32), ("notes.txt".to_string(), 5)]);
+        assert_eq!(shell.runner.params().f32(0), 1.0, "another app's file changed nothing");
+
+        // What Save… would write carries the app's state.
+        let doc = presets::decode(&shell.encode_preset()).unwrap();
+        assert_eq!(doc.app, "Probe");
+        assert_eq!(doc.state, json!({ "answer": 42 }));
+    }
+}

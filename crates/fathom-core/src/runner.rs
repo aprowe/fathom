@@ -18,6 +18,18 @@ use crate::viewport::Viewport;
 /// keeps them out of an app's namespace.
 pub const CMD_PREFIX: &str = "fathom.";
 
+/// The runner's state with the app borrowed separately from the rest, so the app can be
+/// handed all of it at once. See [`Runner::parts`].
+pub struct RunnerParts<'a, A: App> {
+    pub app: &'a mut A,
+    pub gpu: &'a Gpu,
+    pub viewport: Viewport,
+    pub camera: &'a mut Camera,
+    pub schema: &'static [ParamDef],
+    pub block: &'a mut ParamBlock,
+    pub paused: &'a mut bool,
+}
+
 pub struct Runner<A: App> {
     gpu: Gpu,
     app: A,
@@ -80,6 +92,10 @@ impl<A: App> Runner<A> {
         self.schema
     }
 
+    pub fn params(&self) -> &ParamBlock {
+        &self.block
+    }
+
     /// The live parameter values, for an interface that shares this process and can edit
     /// them directly rather than shipping a mirror across a boundary.
     pub fn params_mut(&mut self) -> &mut ParamBlock {
@@ -92,6 +108,38 @@ impl<A: App> Runner<A> {
 
     pub fn is_paused(&self) -> bool {
         self.paused
+    }
+
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    /// Run one update on the next frame even while paused.
+    pub fn step(&mut self) {
+        self.step_once = true;
+    }
+
+    pub fn reset_camera(&mut self) {
+        self.camera = Camera::default();
+    }
+
+    pub fn app(&self) -> &A {
+        &self.app
+    }
+
+    /// Everything at once, borrowed apart, for a host that lets the app reach past the
+    /// contexts the trait hands it. The trait's contexts are the paved road; this is the
+    /// ground under it, and a host is expected to expose it rather than fence it off.
+    pub fn parts(&mut self) -> RunnerParts<'_, A> {
+        RunnerParts {
+            app: &mut self.app,
+            gpu: &self.gpu,
+            viewport: self.viewport,
+            camera: &mut self.camera,
+            schema: self.schema,
+            block: &mut self.block,
+            paused: &mut self.paused,
+        }
     }
 
     /// The interface told us where it wants the sim drawn.
