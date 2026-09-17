@@ -1,0 +1,21 @@
+{
+  "app": "Gravity",
+  "params": {
+    "g": 1.0,
+    "softening": 0.04,
+    "timescale": 1.0,
+    "mouse": 0,
+    "well": 9.0,
+    "launchMass": 0.012,
+    "pointSize": 1.2,
+    "brightness": 0.9,
+    "trails": 0,
+    "trailFade": 0.9,
+    "colorMode": 1
+  },
+  "state": {
+    "scene": 3,
+    "count": 49152,
+    "seed": 2
+  }
+}

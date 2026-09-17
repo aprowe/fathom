@@ -29,6 +29,8 @@ use fathom_core::{
     App, AppDescriptor, CommandCtx, CommandDef, DrawCtx, EventCtx, KeyEvent, Params, SetupCtx,
     UpdateCtx, wgpu,
 };
+use fathom_shell::egui;
+use fathom_shell::{ShellApp, ShellCtx};
 
 use landscape::Landscape;
 use physics::{Profile, Settings};
@@ -40,50 +42,72 @@ fathom_core::params! {
     // The cutoff is the unit of length: every other distance below is a fraction of it,
     // because "a third of the way out" is how anyone actually reasons about these, and a
     // slider reading 0.006 is not.
-    R_CUT       => fathom_core::ParamDef::float("cutoff", "Cutoff R", 0.02, 0.006, 0.06).group("Physics"),
-    CORE_FRAC   => fathom_core::ParamDef::float("core", "Core radius", 0.30, 0.05, 0.70).group("Physics").advanced(),
-    K_REP       => fathom_core::ParamDef::float("kRep", "Core stiffness", 1.5, 0.0, 8.0).group("Physics").advanced(),
+    R_CUT       => fathom_core::ParamDef::float("cutoff", "Cutoff R", 0.02, 0.006, 0.06).group("Physics")
+        .describe("The reach of every interaction, in world units. Every other length here is a fraction of it, so this sets the scale of the structures that form."),
+    CORE_FRAC   => fathom_core::ParamDef::float("core", "Core radius", 0.30, 0.05, 0.70).group("Physics").advanced()
+        .describe("Where the hard core starts, as a fraction of the cutoff. Inside it particles only repel."),
+    K_REP       => fathom_core::ParamDef::float("kRep", "Core stiffness", 1.5, 0.0, 8.0).group("Physics").advanced()
+        .describe("How stiffly the cores push apart. Zero lets particles pass through each other; high values need more substeps to stay stable."),
     // Also the reservoir size. A larger store means a larger colour gradient, so the same
     // power moves colour less far: raise it to make colour the slow variable without
     // changing how much energy is flowing.
-    LAM         => fathom_core::ParamDef::float("lam", "Colour store", 0.6, 0.02, 4.0).group("Physics").advanced(),
+    LAM         => fathom_core::ParamDef::float("lam", "Colour store", 0.6, 0.02, 4.0).group("Physics").advanced()
+        .describe("How much energy a unit of colour mismatch stores. Larger means colour moves less for the same work, so it becomes the slow variable."),
     // The chase is a force, and it is divided by the cutoff like every other force here,
     // so this reads as "how hard the chase pushes relative to the pair bond" at any
     // cutoff. Around 0.4 the chase is a bit under half the reciprocal force: enough to
     // keep the system churning rather than settling into static clumps, well short of
     // overpowering the bond that holds pairs together in the first place.
-    CHASE_GAIN  => fathom_core::ParamDef::float("chase", "Chase gain", 0.4, 0.0, 2.0).group("Physics"),
+    CHASE_GAIN  => fathom_core::ParamDef::float("chase", "Chase gain", 0.4, 0.0, 2.0).group("Physics")
+        .describe("How hard the non-reciprocal part of the landscape pushes, relative to the pair bond. Around 0.4 keeps things churning without breaking pairs apart."),
     // Strongly overdamped is the interesting regime — particles then follow the force
     // field rather than ringing through it — so the useful part of this range is high.
-    DAMPING     => fathom_core::ParamDef::float("damping", "Damping", 600.0, 0.0, 3000.0).group("Physics"),
-    TIMESCALE   => fathom_core::ParamDef::float("timescale", "Time scale", 0.15, 0.0, 1.0).group("Physics"),
-    SUBSTEPS    => fathom_core::ParamDef::int("substeps", "Substeps", 4, 1, 12).group("Physics").advanced(),
+    DAMPING     => fathom_core::ParamDef::float("damping", "Damping", 600.0, 0.0, 3000.0).group("Physics")
+        .describe("Velocity drag. High values make particles follow the force field; low values let them overshoot and ring."),
+    TIMESCALE   => fathom_core::ParamDef::float("timescale", "Time scale", 0.15, 0.0, 1.0).group("Physics")
+        .describe("Simulated seconds per real second. The stiff core limits how far this can go before pairs blow apart."),
+    SUBSTEPS    => fathom_core::ParamDef::int("substeps", "Substeps", 4, 1, 12).group("Physics").advanced()
+        .describe("Physics steps per frame. More is more stable at the same time scale, at a linear cost."),
 
     // -- Landscape -----------------------------------------------------------------
-    PROFILE     => fathom_core::ParamDef::choice("profile", "Radial profile", 1, Profile::LABELS).group("Landscape"),
+    PROFILE     => fathom_core::ParamDef::choice("profile", "Radial profile", 1, Profile::LABELS).group("Landscape")
+        .describe("The shape of the force with distance. Classic binds at one separation for every pair; Well lets colour decide how far apart a pair wants to be."),
     // Baseline attraction is not optional. Without it, the even and odd parts of the
     // landscape can put a pair's attraction near zero exactly where its chase peaks: the
     // pair loses its grip at the moment it is being pushed hardest and self-propels out
     // of range, never to interact again.
-    S0          => fathom_core::ParamDef::float("s0", "Baseline attraction", 0.9, 0.0, 2.0).group("Landscape").advanced(),
-    AMP_SYM     => fathom_core::ParamDef::float("ampSym", "Pair strength", 0.7, 0.0, 2.0).group("Landscape"),
-    AMP_CHASE   => fathom_core::ParamDef::float("ampChase", "Chase strength", 0.7, 0.0, 2.0).group("Landscape"),
+    S0          => fathom_core::ParamDef::float("s0", "Baseline attraction", 0.9, 0.0, 2.0).group("Landscape").advanced()
+        .describe("Attraction every pair feels regardless of colour. Without it a pair can lose its grip exactly where its chase peaks and fly out of range."),
+    AMP_SYM     => fathom_core::ParamDef::float("ampSym", "Pair strength", 0.7, 0.0, 2.0).group("Landscape")
+        .describe("How strongly the colour-dependent, reciprocal part of the landscape acts: the bonding and repelling that both members feel equally."),
+    AMP_CHASE   => fathom_core::ParamDef::float("ampChase", "Chase strength", 0.7, 0.0, 2.0).group("Landscape")
+        .describe("How strongly the odd part of the landscape acts: the part that pushes a pair the same way, one chasing the other."),
     // How many harmonics the landscape is allowed. Low is smooth and broad; high is
     // finely divided, so colours a little apart can want quite different things.
-    HARMONICS   => fathom_core::ParamDef::int("harmonics", "Landscape detail", 3, 1, landscape::MAX_HARMONICS).group("Landscape"),
-    WELL_SIGMA  => fathom_core::ParamDef::float("wellSigma", "Well width", 0.16, 0.03, 0.50).group("Landscape").advanced(),
-    RSTAR_MIN   => fathom_core::ParamDef::float("rstarMin", "Closest liking", 0.30, 0.05, 0.90).group("Landscape").advanced(),
-    RSTAR_SPAN  => fathom_core::ParamDef::float("rstarSpan", "Liking spread", 0.45, 0.0, 0.90).group("Landscape").advanced(),
+    HARMONICS   => fathom_core::ParamDef::int("harmonics", "Landscape detail", 3, 1, landscape::MAX_HARMONICS).group("Landscape")
+        .describe("How finely the landscape is divided over colour. Low is smooth and broad; high lets colours a little apart want quite different things."),
+    WELL_SIGMA  => fathom_core::ParamDef::float("wellSigma", "Well width", 0.16, 0.03, 0.50).group("Landscape").advanced()
+        .describe("The width of the preferred-distance well, as a fraction of the cutoff. Well profile only."),
+    RSTAR_MIN   => fathom_core::ParamDef::float("rstarMin", "Closest liking", 0.30, 0.05, 0.90).group("Landscape").advanced()
+        .describe("The closest separation any pair prefers, as a fraction of the cutoff. Well profile only."),
+    RSTAR_SPAN  => fathom_core::ParamDef::float("rstarSpan", "Liking spread", 0.45, 0.0, 0.90).group("Landscape").advanced()
+        .describe("How much further out the most distant preference sits, so preferred separations range from Closest liking to Closest liking plus this."),
 
     // -- Render --------------------------------------------------------------------
-    POINT_SIZE  => fathom_core::ParamDef::float("pointSize", "Point size", 1.5, 0.5, 6.0).group("Render"),
-    BRIGHTNESS  => fathom_core::ParamDef::float("brightness", "Brightness", 1.2, 0.2, 4.0).group("Render"),
-    COLOR_MODE  => fathom_core::ParamDef::choice("colorMode", "Colour by", 0, &["Colour", "Speed", "Colour gradient", "Flat"]).group("Render"),
+    POINT_SIZE  => fathom_core::ParamDef::float("pointSize", "Point size", 1.5, 0.5, 6.0).group("Render")
+        .describe("How many pixels wide a particle is drawn."),
+    BRIGHTNESS  => fathom_core::ParamDef::float("brightness", "Brightness", 1.2, 0.2, 4.0).group("Render")
+        .describe("How much each particle adds to the pixel it lands on."),
+    COLOR_MODE  => fathom_core::ParamDef::choice("colorMode", "Colour by", 0, &["Colour", "Speed", "Colour gradient", "Flat"]).group("Render")
+        .describe("What a particle's colour shows: its own colour on the circle, its speed, how steep the colour gradient around it is, or nothing."),
 
     // -- Instruments ---------------------------------------------------------------
-    OVERLAY     => fathom_core::ParamDef::toggle("overlay", "Show instruments", true).group("Instruments"),
-    PROBE_A     => fathom_core::ParamDef::float("probeA", "Probe colour A", 0.0, 0.0, TAU).group("Instruments"),
-    PROBE_B     => fathom_core::ParamDef::float("probeB", "Probe colour B", TAU * 0.5, 0.0, TAU).group("Instruments"),
+    OVERLAY     => fathom_core::ParamDef::toggle("overlay", "Show instruments", true).group("Instruments")
+        .describe("Draw the instruments over the simulation: the landscape and the probe colours."),
+    PROBE_A     => fathom_core::ParamDef::float("probeA", "Probe colour A", 0.0, 0.0, TAU).group("Instruments")
+        .describe("One of the two colours the instruments show the landscape for, in radians around the colour circle."),
+    PROBE_B     => fathom_core::ParamDef::float("probeB", "Probe colour B", TAU * 0.5, 0.0, TAU).group("Instruments")
+        .describe("The other colour the instruments show the landscape for."),
 }
 
 /// Particle counts offered by the `count` command. All are multiples of the 256-wide
@@ -93,14 +117,25 @@ const COUNT_LABELS: &[&str] = &["4,096", "16,384", "65,536", "131,072"];
 const DEFAULT_COUNT_INDEX: u32 = 1;
 
 const COMMANDS: &[CommandDef] = &[
-    CommandDef::choice("preset", "Preset", presets::LABELS).group("Simulation"),
-    CommandDef::choice("scene", "Start from", Scene::LABELS).group("Simulation"),
+    CommandDef::choice("preset", "Preset", presets::LABELS)
+        .group("Simulation")
+        .describe("A place worth starting from: a set of slider values and the landscape they were tuned on, applied together."),
+    CommandDef::choice("scene", "Start from", Scene::LABELS)
+        .group("Simulation")
+        .describe("How the particles are laid out and coloured at the start. Picking one reseeds them."),
     CommandDef::choice("count", "Particles", COUNT_LABELS)
         .group("Simulation")
-        .initial(DEFAULT_COUNT_INDEX),
-    CommandDef::button("randomize", "New landscape").group("Simulation"),
-    CommandDef::button("reseed", "Reseed particles").group("Simulation"),
-    CommandDef::button("reset", "Reset").group("Simulation"),
+        .initial(DEFAULT_COUNT_INDEX)
+        .describe("How many particles to simulate. Neighbours are found on a grid, so the cost grows with the count, not its square."),
+    CommandDef::button("randomize", "New landscape")
+        .group("Simulation")
+        .describe("Bake a new interaction landscape from the next seed, leaving the particles where they are. N does the same."),
+    CommandDef::button("reseed", "Reseed particles")
+        .group("Simulation")
+        .describe("Lay the particles out again from the next seed, on the same landscape. R does the same."),
+    CommandDef::button("reset", "Reset")
+        .group("Simulation")
+        .describe("Lay the particles out again from the current seed, and put the camera back."),
 ];
 
 pub struct EcpLife {
@@ -180,7 +215,7 @@ impl EcpLife {
 
 impl App for EcpLife {
     fn describe() -> AppDescriptor {
-        AppDescriptor { name: "ECP-Life", params: SCHEMA, commands: COMMANDS }
+        AppDescriptor::new("ECP-Life", SCHEMA, COMMANDS).presets(fathom_core::builtin_presets!())
     }
 
     fn setup(ctx: &mut SetupCtx<'_>) -> Self {
@@ -299,6 +334,50 @@ impl App for EcpLife {
                 *ctx.camera = fathom_core::Camera::default();
             }
             other => log::warn!("ecp-life: unknown command {other}"),
+        }
+    }
+}
+
+impl ShellApp for EcpLife {
+    /// Which landscape and which layout this is, in the corner: the two seeds are what
+    /// you would need to tell someone to see the same thing.
+    fn overlay(&mut self, ui: &mut egui::Ui, _ctx: &mut ShellCtx<'_>) {
+        let text = format!(
+            "{} particles · landscape {} · layout {}",
+            self.sim.n, self.landscape_seed, self.particle_seed
+        );
+        ui.painter().text(
+            ui.max_rect().left_top() + egui::vec2(16.0, 14.0),
+            egui::Align2::LEFT_TOP,
+            text,
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_white_alpha(140),
+        );
+    }
+
+    /// A saved file carries the landscape, because the same sliders over different
+    /// terrain do something else entirely.
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::json!({
+            "landscape_seed": self.landscape_seed,
+            "harmonics": self.baked_harmonics,
+            "particle_seed": self.particle_seed,
+            "scene": self.sim.scene as u32,
+            "count": self.sim.n,
+        })
+    }
+
+    fn load_state(&mut self, state: &serde_json::Value, ctx: &mut ShellCtx<'_>) {
+        let get = |key: &str| state.get(key).and_then(|v| v.as_u64());
+        if let Some(seed) = get("landscape_seed") {
+            let harmonics = get("harmonics").map(|h| h as u32).unwrap_or(ctx.params().int(HARMONICS));
+            self.rebake(&ctx.gpu.queue, seed, harmonics);
+        }
+        if let Some(seed) = get("particle_seed") {
+            self.particle_seed = seed;
+            let scene = get("scene").map(|i| Scene::from_index(i as u32)).unwrap_or(self.sim.scene);
+            let n = get("count").map(|n| n as u32).unwrap_or(self.sim.n);
+            self.sim.reseed(&ctx.gpu.device, scene, n, seed);
         }
     }
 }

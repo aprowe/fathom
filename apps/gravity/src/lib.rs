@@ -12,30 +12,43 @@ use fathom_core::{
     App, AppDescriptor, CommandCtx, CommandDef, DrawCtx, EventCtx, KeyEvent, MouseEvent, SetupCtx,
     UpdateCtx, wgpu,
 };
+use fathom_shell::egui;
+use fathom_shell::{ShellApp, ShellCtx};
 
 use scenes::Scene;
 use sim::{Sim, Uniforms};
 
 fathom_core::params! {
-    G           => fathom_core::ParamDef::float("g", "Gravity", 1.0, 0.0, 4.0).group("Physics"),
+    G           => fathom_core::ParamDef::float("g", "Gravity", 1.0, 0.0, 4.0).group("Physics")
+        .describe("The gravitational constant. Every orbit tightens and speeds up as it rises; at zero the bodies coast in straight lines."),
     // The mean spacing in a unit disc of 8k bodies is about 0.02, so a softening of
     // that size lets the heavy core scatter violently off its nearest neighbours: it
     // random-walks and drags the whole disc out of frame within a minute. Keeping the
     // default a few times the spacing is what holds the scene together.
-    SOFTENING   => fathom_core::ParamDef::float("softening", "Softening", 0.06, 0.002, 0.3).group("Physics"),
-    TIMESCALE   => fathom_core::ParamDef::float("timescale", "Time scale", 1.0, 0.0, 3.0).group("Physics"),
+    SOFTENING   => fathom_core::ParamDef::float("softening", "Softening", 0.06, 0.002, 0.3).group("Physics")
+        .describe("How close two bodies can get before their pull stops growing. Small values give violent close encounters that fling bodies out; large ones make the whole scene feel like syrup."),
+    TIMESCALE   => fathom_core::ParamDef::float("timescale", "Time scale", 1.0, 0.0, 3.0).group("Physics")
+        .describe("Simulated seconds per real second. Above about two the integrator starts to lose energy on tight orbits."),
     // What the left button does inside the view. The right button always launches, so
     // both gestures are reachable without visiting the panel.
-    MOUSE       => fathom_core::ParamDef::choice("mouse", "Left drag", 0, &["Pull", "Launch"]).group("Mouse"),
-    WELL        => fathom_core::ParamDef::float("well", "Pull strength", 9.0, 0.0, 40.0).group("Mouse"),
+    MOUSE       => fathom_core::ParamDef::choice("mouse", "Left drag", 0, &["Pull", "Launch"]).group("Mouse")
+        .describe("What dragging with the left button does: attract everything towards the pointer, or aim and throw in a new body. The right button always launches."),
+    WELL        => fathom_core::ParamDef::float("well", "Pull strength", 9.0, 0.0, 40.0).group("Mouse")
+        .describe("The mass of the point under the pointer while pulling. Around ten it steers a disc; at forty it swallows one."),
     // The default is a planet; the top of the range is a body that
     // outweighs the sun several times over.
-    LAUNCH_MASS => fathom_core::ParamDef::float("launchMass", "Launch mass", 0.012, 0.001, 0.5).group("Mouse"),
-    POINT_SIZE  => fathom_core::ParamDef::float("pointSize", "Point size", 1.6, 0.5, 6.0).group("Render"),
-    BRIGHTNESS  => fathom_core::ParamDef::float("brightness", "Brightness", 1.3, 0.2, 4.0).group("Render"),
-    TRAILS      => fathom_core::ParamDef::toggle("trails", "Trails", true).group("Render"),
-    TRAIL_FADE  => fathom_core::ParamDef::float("trailFade", "Trail length", 0.90, 0.50, 0.99).group("Render"),
-    COLOR_MODE  => fathom_core::ParamDef::choice("colorMode", "Colour by", 0, &["Speed", "Mass", "Flat"]).group("Render"),
+    LAUNCH_MASS => fathom_core::ParamDef::float("launchMass", "Launch mass", 0.012, 0.001, 0.5).group("Mouse")
+        .describe("The mass of a thrown body. The default is a planet; the sun weighs 0.12, so the top of the range is something that rearranges the whole scene."),
+    POINT_SIZE  => fathom_core::ParamDef::float("pointSize", "Point size", 1.6, 0.5, 6.0).group("Render")
+        .describe("How many pixels wide a body is drawn. Heavy bodies are drawn as discs whatever this says."),
+    BRIGHTNESS  => fathom_core::ParamDef::float("brightness", "Brightness", 1.3, 0.2, 4.0).group("Render")
+        .describe("How much each body adds to the pixel it lands on. Turn it down for dense scenes, up for sparse ones."),
+    TRAILS      => fathom_core::ParamDef::toggle("trails", "Trails", true).group("Render")
+        .describe("Leave each frame faintly behind, so a body draws its path."),
+    TRAIL_FADE  => fathom_core::ParamDef::float("trailFade", "Trail length", 0.90, 0.50, 0.99).group("Render")
+        .describe("How much of the previous frame survives into this one. 0.99 keeps a path for many seconds; 0.5 is barely a streak."),
+    COLOR_MODE  => fathom_core::ParamDef::choice("colorMode", "Colour by", 0, &["Speed", "Mass", "Flat"]).group("Render")
+        .describe("What a body's colour means: how fast it is moving, how heavy it is, or nothing."),
 }
 
 /// Body counts offered by the `count` command. All are multiples of the 256-wide
@@ -52,12 +65,18 @@ const LAUNCH_GAIN: f32 = 1.0;
 const COMMANDS: &[CommandDef] = &[
     CommandDef::choice("scene", "Scene", Scene::LABELS)
         .group("Simulation")
-        .initial(DEFAULT_SCENE as u32),
+        .initial(DEFAULT_SCENE as u32)
+        .describe("The initial arrangement. Picking one restarts the simulation from it, with the same seed."),
     CommandDef::choice("count", "Bodies", COUNT_LABELS)
         .group("Simulation")
-        .initial(DEFAULT_COUNT_INDEX),
-    CommandDef::button("reset", "Reset").group("Simulation"),
-    CommandDef::button("randomize", "Randomise").group("Simulation"),
+        .initial(DEFAULT_COUNT_INDEX)
+        .describe("How many bodies to simulate. Every body pulls on every other, so the cost grows with the square of this."),
+    CommandDef::button("reset", "Reset")
+        .group("Simulation")
+        .describe("Start the current scene again from the same seed, and put the camera back."),
+    CommandDef::button("randomize", "Randomise")
+        .group("Simulation")
+        .describe("Start the current scene again from a new seed. R does the same."),
 ];
 
 pub struct Gravity {
@@ -118,7 +137,7 @@ impl Gravity {
 
 impl App for Gravity {
     fn describe() -> AppDescriptor {
-        AppDescriptor { name: "Gravity", params: SCHEMA, commands: COMMANDS }
+        AppDescriptor::new("Gravity", SCHEMA, COMMANDS).presets(fathom_core::builtin_presets!())
     }
 
     fn setup(ctx: &mut SetupCtx<'_>) -> Self {
@@ -250,6 +269,60 @@ impl App for Gravity {
             }
             other => log::warn!("gravity: unknown command {other}"),
         }
+    }
+}
+
+impl ShellApp for Gravity {
+    /// A readout in the corner, and while a body is being aimed, its launch line and the
+    /// speed it will leave with, pinned to the pointer.
+    fn overlay(&mut self, ui: &mut egui::Ui, ctx: &mut ShellCtx<'_>) {
+        let rect = ui.max_rect();
+        let scene = Scene::LABELS[Scene::ALL.iter().position(|s| *s == self.sim.scene).unwrap_or(0)];
+        let text = format!("{} bodies · {scene} · seed {}", self.sim.n, self.sim.seed);
+        ui.painter().text(
+            rect.left_top() + egui::vec2(16.0, 14.0),
+            egui::Align2::LEFT_TOP,
+            text,
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_white_alpha(140),
+        );
+
+        if let Some((from, to)) = self.launch {
+            let a = ctx.to_screen(from);
+            let b = ctx.to_screen(to);
+            let painter = ui.painter();
+            painter.line_segment([a, b], egui::Stroke::new(1.0, egui::Color32::from_white_alpha(160)));
+            painter.circle_stroke(a, 4.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+            let v = launch_velocity(from, to);
+            let speed = (v[0] * v[0] + v[1] * v[1]).sqrt();
+            painter.text(
+                b + egui::vec2(10.0, -10.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{speed:.2} u/s"),
+                egui::FontId::monospace(11.0),
+                egui::Color32::WHITE,
+            );
+        }
+    }
+
+    /// A preset remembers which scene it was made in, at what size and from which seed,
+    /// so loading one brings back the arrangement and not just the sliders.
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::json!({ "scene": self.sim.scene as u32, "count": self.sim.n, "seed": self.sim.seed })
+    }
+
+    fn load_state(&mut self, state: &serde_json::Value, ctx: &mut ShellCtx<'_>) {
+        let scene = state.get("scene").and_then(|v| v.as_u64()).map(|i| Scene::from_index(i as u32));
+        let n = state.get("count").and_then(|v| v.as_u64()).map(|n| n as u32);
+        let seed = state.get("seed").and_then(|v| v.as_u64());
+        if scene.is_none() && n.is_none() && seed.is_none() {
+            return;
+        }
+        let scene = scene.unwrap_or(self.sim.scene);
+        let n = n.unwrap_or(self.sim.n);
+        let seed = seed.unwrap_or(self.sim.seed);
+        self.sim.reseed(&ctx.gpu.device, &ctx.gpu.queue, scene, n, seed);
+        *ctx.camera = fathom_core::Camera::default();
     }
 }
 
