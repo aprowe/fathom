@@ -63,6 +63,9 @@ pub struct Shell<A: App> {
     preset_name: String,
     preset_names: Option<Vec<String>>,
     preset_status: String,
+    /// State of the panel's Randomize button. Seeded from the clock once; nothing here
+    /// needs to be reproducible, it needs to be different each click.
+    rng: u64,
 }
 
 impl<A: App> Shell<A> {
@@ -96,7 +99,48 @@ impl<A: App> Shell<A> {
             preset_name: String::new(),
             preset_names: None,
             preset_status: String::new(),
+            rng: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0x9E37_79B9_7F4A_7C15)
+                | 1,
         })
+    }
+
+    /// The next random unit interval from a small xorshift.
+    fn random_unit(&mut self) -> f32 {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng = x;
+        (x >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    /// Roll every unlocked parameter to a value somewhere in its range.
+    fn randomize(&mut self, ui: &egui::Ui) {
+        let schema = self.runner.schema();
+        for (index, def) in schema.iter().enumerate() {
+            if panel::is_locked(ui, def.name) {
+                continue;
+            }
+            let u = self.random_unit();
+            let word = match def.kind {
+                ParamKind::Float => {
+                    let mut v = def.min + u * (def.max - def.min);
+                    if def.step > 0.0 {
+                        v = def.min + ((v - def.min) / def.step).round() * def.step;
+                    }
+                    v.clamp(def.min, def.max).to_bits()
+                }
+                // Ints, toggles and choices are all "one of max - min + 1 slots".
+                _ => {
+                    let slots = (def.max - def.min + 1.0).max(1.0);
+                    (def.min + (u * slots).floor().min(slots - 1.0)) as u32
+                }
+            };
+            self.runner.params_mut().set_u32(index, word);
+        }
     }
 
     fn choice_of(&self, name: &'static str, fallback: usize) -> usize {
@@ -419,19 +463,49 @@ mod panel {
         ui.add_space(6.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
+            // Presets and Randomize sit above the tabs: they act on the whole block, so
+            // they belong to no tab and must be reachable from every one.
             #[cfg(not(target_arch = "wasm32"))]
             preset_section(shell, ui, &descriptor);
+            ui.horizontal(|ui| {
+                if skin::action(ui, "Randomize")
+                    .on_hover_text("Roll every unlocked parameter. Click a padlock to keep one where it is.")
+                    .clicked()
+                {
+                    shell.randomize(ui);
+                }
+            });
+            ui.add_space(8.0);
+
+            // Tabs in declaration order. A control that names no tab goes on the first
+            // one; an app that names none at all gets a single untabbed panel.
+            let mut tabs: Vec<&'static str> = Vec::new();
+            for t in descriptor.params.iter().map(|p| p.tab).chain(descriptor.commands.iter().map(|c| c.tab)) {
+                if !t.is_empty() && !tabs.contains(&t) {
+                    tabs.push(t);
+                }
+            }
+            let tab_id = ui.make_persistent_id(("fathom-tab", descriptor.name));
+            let mut current = ui.data_mut(|d| *d.get_persisted_mut_or(tab_id, 0usize)).min(tabs.len().saturating_sub(1));
+            if tabs.len() > 1 {
+                if let Some(picked) = skin::tabs(ui, "fathom-tabs", &tabs, current) {
+                    current = picked;
+                    ui.data_mut(|d| d.insert_persisted(tab_id, current));
+                }
+                ui.add_space(8.0);
+            }
+            let on_tab = |t: &'static str| tabs.is_empty() || t == tabs[current] || (t.is_empty() && current == 0);
 
             // Groups in declaration order, parameters before the commands filed under the
             // same heading.
             let mut groups: Vec<&'static str> = Vec::new();
             for p in descriptor.params {
-                if !groups.contains(&p.group) {
+                if on_tab(p.tab) && !groups.contains(&p.group) {
                     groups.push(p.group);
                 }
             }
             for c in descriptor.commands {
-                if !groups.contains(&c.group) {
+                if on_tab(c.tab) && !groups.contains(&c.group) {
                     groups.push(c.group);
                 }
             }
@@ -445,7 +519,7 @@ mod panel {
                 // the plain ones: an app files a command under a group because it belongs
                 // beside those controls, and burying a Reset button would be perverse.
                 for (index, def) in descriptor.params.iter().enumerate() {
-                    if def.group == group && !def.advanced {
+                    if def.group == group && on_tab(def.tab) && !def.advanced {
                         parameter(shell, ui, index, def);
                     }
                 }
@@ -455,7 +529,7 @@ mod panel {
                     .params
                     .iter()
                     .enumerate()
-                    .filter(|(_, d)| d.group == group && d.advanced)
+                    .filter(|(_, d)| d.group == group && on_tab(d.tab) && d.advanced)
                     .map(|(i, _)| i)
                     .collect();
                 if !advanced.is_empty() && skin::more_toggle(ui, group, advanced.len()) {
@@ -467,6 +541,25 @@ mod panel {
                 ui.add_space(8.0);
             }
         });
+    }
+
+    /// Whether a parameter is held out of Randomize. Remembered by name, with the rest
+    /// of the panel's state. Everything starts locked: Randomize is opt-in per control,
+    /// so a stray click cannot scramble a block the user has just tuned.
+    pub fn is_locked(ui: &egui::Ui, name: &str) -> bool {
+        let id = lock_id(name);
+        ui.data_mut(|d| *d.get_persisted_mut_or(id, true))
+    }
+
+    /// Keyed on the name alone, not off a `Ui`: the flag is read in the row's parent
+    /// `Ui` and written in a child, and `make_persistent_id` would give each its own key.
+    fn lock_id(name: &str) -> egui::Id {
+        egui::Id::new(("fathom-lock", name))
+    }
+
+    fn set_locked(ui: &egui::Ui, name: &str, locked: bool) {
+        let id = lock_id(name);
+        ui.data_mut(|d| d.insert_persisted(id, locked));
     }
 
     /// Save the whole parameter block under a typed name, and the names already saved
@@ -562,7 +655,15 @@ mod panel {
         index: usize,
         def: &ParamDef,
     ) {
-        let response = ui.scope(|ui| control_for(shell, ui, index, def)).response;
+        let locked = is_locked(ui, def.name);
+        let response = ui
+            .horizontal(|ui| {
+                if skin::padlock(ui, def.name, locked).clicked() {
+                    set_locked(ui, def.name, !locked);
+                }
+                ui.vertical(|ui| control_for(shell, ui, index, def));
+            })
+            .response;
         if !ui.rect_contains_pointer(response.rect) {
             return;
         }
@@ -583,8 +684,9 @@ mod panel {
             if !def.description.is_empty() {
                 ui.label(egui::RichText::new(def.description).size(12.0).color(skin::TEXT));
             }
+            let held = if locked { " · locked out of Randomize" } else { "" };
             ui.label(
-                egui::RichText::new(format!("default {default} · right-click to reset"))
+                egui::RichText::new(format!("default {default} · right-click to reset{held}"))
                     .size(11.0)
                     .color(skin::MUTED),
             );

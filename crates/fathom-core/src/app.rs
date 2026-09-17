@@ -21,6 +21,8 @@ pub struct CommandDef {
     pub name: &'static str,
     pub label: &'static str,
     pub group: &'static str,
+    /// Panel tab the group sits on; empty means the first tab.
+    pub tab: &'static str,
     /// If non-empty, the interface renders a select instead of a button and dispatches
     /// the command with `{ "value": <index> }`.
     pub options: &'static [&'static str],
@@ -31,15 +33,20 @@ pub struct CommandDef {
 
 impl CommandDef {
     pub const fn button(name: &'static str, label: &'static str) -> Self {
-        Self { name, label, group: "Actions", options: &[], initial: 0 }
+        Self { name, label, group: "Actions", tab: "", options: &[], initial: 0 }
     }
 
     pub const fn choice(name: &'static str, label: &'static str, options: &'static [&'static str]) -> Self {
-        Self { name, label, group: "Actions", options, initial: 0 }
+        Self { name, label, group: "Actions", tab: "", options, initial: 0 }
     }
 
     pub const fn group(mut self, group: &'static str) -> Self {
         self.group = group;
+        self
+    }
+
+    pub const fn tab(mut self, tab: &'static str) -> Self {
+        self.tab = tab;
         self
     }
 

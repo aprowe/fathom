@@ -40,6 +40,9 @@ pub struct ParamDef {
     pub step: f32,
     /// Panel section this control is filed under.
     pub group: &'static str,
+    /// Panel tab the section sits on. Empty means the first tab, whatever it is called:
+    /// an app that never mentions tabs gets one panel, as before.
+    pub tab: &'static str,
     /// Labels for [`ParamKind::Choice`], indexed by value. Empty for other kinds.
     pub options: &'static [&'static str],
     /// Whether this control is filed behind its group's disclosure rather than shown
@@ -64,6 +67,7 @@ impl ParamDef {
             max,
             step: 0.0,
             group: "General",
+            tab: "",
             options: &[],
             advanced: false,
             description: "",
@@ -80,6 +84,7 @@ impl ParamDef {
             max: max as f32,
             step: 1.0,
             group: "General",
+            tab: "",
             options: &[],
             advanced: false,
             description: "",
@@ -96,6 +101,7 @@ impl ParamDef {
             max: 1.0,
             step: 1.0,
             group: "General",
+            tab: "",
             options: &[],
             advanced: false,
             description: "",
@@ -117,6 +123,7 @@ impl ParamDef {
             max: options.len() as f32 - 1.0,
             step: 1.0,
             group: "General",
+            tab: "",
             options,
             advanced: false,
             description: "",
@@ -126,6 +133,12 @@ impl ParamDef {
     /// File this control under a named panel section.
     pub const fn group(mut self, group: &'static str) -> Self {
         self.group = group;
+        self
+    }
+
+    /// Put this control's group on a named panel tab.
+    pub const fn tab(mut self, tab: &'static str) -> Self {
+        self.tab = tab;
         self
     }
 

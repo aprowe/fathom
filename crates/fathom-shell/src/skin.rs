@@ -371,6 +371,60 @@ pub fn segmented(ui: &mut Ui, key: &str, options: &[&str], selected: usize) -> O
     picked
 }
 
+/// The panel's tab strip: one page of controls showing at a time.
+///
+/// Deliberately unlike [`segmented`], which is a *value* control and sits inside a row.
+/// Tabs are navigation, so they get the heading typeface, no box, and a bright underline
+/// on the open page riding a hairline baseline — closer to a folder edge than a switch.
+pub fn tabs(ui: &mut Ui, key: &str, options: &[&str], selected: usize) -> Option<usize> {
+    const HEIGHT: f32 = 28.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
+    let font = FontId::new(12.5, semibold());
+    let painter = ui.painter();
+
+    // Measure first so the cells are sized to their labels, left-aligned, not spread to
+    // fill the width like a segmented control's equal cells.
+    let widths: Vec<f32> = options
+        .iter()
+        .map(|o| painter.layout_no_wrap((*o).to_owned(), font.clone(), TEXT).size().x + 18.0)
+        .collect();
+
+    let mut picked = None;
+    let mut x = rect.left();
+    for (i, option) in options.iter().enumerate() {
+        let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(widths[i], HEIGHT));
+        x += widths[i];
+        let response =
+            ui.interact(cell, ui.make_persistent_id(("fathom-tab", key, i)), Sense::click());
+        if response.clicked() {
+            picked = Some(i);
+        }
+
+        let on = i == selected;
+        let lit = ui.ctx().animate_bool_responsive(response.id, on);
+        let painter = ui.painter();
+        let ink = if on {
+            TEXT
+        } else if response.hovered() {
+            TEXT.gamma_multiply(0.85)
+        } else {
+            MUTED
+        };
+        painter.text(cell.center(), egui::Align2::CENTER_CENTER, *option, font.clone(), ink);
+        if lit > 0.0 {
+            let half = (cell.width() - 14.0) * 0.5 * lit;
+            painter.hline(
+                cell.center().x - half..=cell.center().x + half,
+                rect.bottom() - 1.0,
+                Stroke::new(2.0, ACCENT.gamma_multiply(0.4 + 0.6 * lit)),
+            );
+        }
+    }
+    // The baseline the open tab's underline sits on.
+    painter.hline(rect.left()..=rect.right(), rect.bottom() - 0.5, Stroke::new(1.0, LINE));
+    picked
+}
+
 /// What each option's label measures, so the caller can decide whether they fit.
 pub fn segment_widths(ui: &Ui, options: &[&str]) -> Vec<f32> {
     let font = FontId::new(11.0, FontFamily::Proportional);
@@ -379,6 +433,50 @@ pub fn segment_widths(ui: &Ui, options: &[&str]) -> Vec<f32> {
         .iter()
         .map(|o| painter.layout_no_wrap((*o).to_owned(), font.clone(), TEXT).size().x)
         .collect()
+}
+
+/// A small padlock, lit when locked. Drawn rather than typed because the bundled fonts
+/// have no glyph for it that matches the rest of the panel.
+pub fn padlock(ui: &mut Ui, key: &str, locked: bool) -> Response {
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(14.0, ROW), Sense::click());
+    let response = response.on_hover_text(if locked {
+        "Locked: Randomize leaves this alone. Click to unlock."
+    } else {
+        "Click to lock this out of Randomize."
+    });
+    let _ = key;
+    let ink = if locked {
+        ACCENT
+    } else if response.hovered() {
+        TEXT
+    } else {
+        LINE.gamma_multiply(2.2)
+    };
+    let painter = ui.painter();
+    let c = rect.center();
+    // Body.
+    let body = Rect::from_center_size(pos2(c.x, c.y + 2.5), vec2(9.0, 7.0));
+    painter.rect(body, CornerRadius::same(1), if locked { ACCENT.gamma_multiply(0.25) } else { Color32::TRANSPARENT }, Stroke::new(1.2, ink), StrokeKind::Inside);
+    // Shackle: an arc when locked, an arc swung open to the side when not.
+    let r = 3.0;
+    let top = body.top();
+    let cx = if locked { c.x } else { c.x + 2.0 };
+    let n = 8;
+    let mut pts = Vec::with_capacity(n + 1);
+    for i in 0..=n {
+        let a = std::f32::consts::PI * (1.0 - i as f32 / n as f32);
+        pts.push(pos2(cx + r * a.cos(), top - 1.0 - r * a.sin()));
+    }
+    // Drop the legs.
+    let left_leg = pos2(cx - r, top - 1.0);
+    let right_leg = pos2(cx + r, top - 1.0);
+    painter.add(egui::Shape::line(pts, Stroke::new(1.2, ink)));
+    painter.line_segment([left_leg, pos2(left_leg.x, top)], Stroke::new(1.2, ink));
+    if locked {
+        painter.line_segment([right_leg, pos2(right_leg.x, top)], Stroke::new(1.2, ink));
+    }
+    response
 }
 
 /// A labelled row carrying a dropdown, for choices too long to segment.
