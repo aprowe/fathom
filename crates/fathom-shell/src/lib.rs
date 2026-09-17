@@ -15,6 +15,8 @@
 //! and renders into it, exactly as it would if that view were a swapchain.
 
 pub mod control;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod presets;
 pub mod skin;
 
 use std::sync::Arc;
@@ -55,6 +57,12 @@ pub struct Shell<A: App> {
     /// How wide the docked panel is, in points. Owned here rather than left to egui so
     /// the drawer can borrow the same number on a narrow screen.
     panel_width: f32,
+    /// The preset name being typed, the names on disk, and the last thing that happened
+    /// to them. Listed once at startup and again after every save or delete, not every
+    /// frame: a directory read per frame is a waste even when it is fast.
+    preset_name: String,
+    preset_names: Option<Vec<String>>,
+    preset_status: String,
 }
 
 impl<A: App> Shell<A> {
@@ -85,6 +93,9 @@ impl<A: App> Shell<A> {
             command_choice: Vec::new(),
             drawer_open: false,
             panel_width: panel::DEFAULT_WIDTH,
+            preset_name: String::new(),
+            preset_names: None,
+            preset_status: String::new(),
         })
     }
 
@@ -408,6 +419,9 @@ mod panel {
         ui.add_space(6.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
+            #[cfg(not(target_arch = "wasm32"))]
+            preset_section(shell, ui, &descriptor);
+
             // Groups in declaration order, parameters before the commands filed under the
             // same heading.
             let mut groups: Vec<&'static str> = Vec::new();
@@ -455,8 +469,129 @@ mod panel {
         });
     }
 
-    /// One parameter, drawn as whatever its kind calls for.
+    /// Save the whole parameter block under a typed name, and the names already saved
+    /// with a Load and a delete each. Files live under `presets/<app>/` in the working
+    /// directory; see [`presets`].
+    #[cfg(not(target_arch = "wasm32"))]
+    fn preset_section<A: App>(
+        shell: &mut Shell<A>,
+        ui: &mut egui::Ui,
+        descriptor: &fathom_core::AppDescriptor,
+    ) {
+        if !skin::group_header(ui, "Presets", true) {
+            return;
+        }
+        let root = presets::default_root();
+        let app = descriptor.name;
+        if shell.preset_names.is_none() {
+            shell.preset_names = Some(presets::list(&root, app));
+        }
+
+        let mut save = false;
+        ui.horizontal(|ui| {
+            let edit = egui::TextEdit::singleline(&mut shell.preset_name)
+                .hint_text("name")
+                .font(egui::FontId::proportional(12.0))
+                .desired_width(ui.available_width() - 56.0);
+            let response = ui.add(edit);
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                save = true;
+            }
+            if skin::action(ui, "Save").clicked() {
+                save = true;
+            }
+        });
+        if save {
+            let name = shell.preset_name.clone();
+            let schema = shell.runner.schema();
+            match presets::save(&root, app, &name, schema, shell.runner.params_mut()) {
+                Ok(path) => {
+                    shell.preset_status = format!("saved {}", path.display());
+                    shell.preset_names = None;
+                }
+                Err(e) => shell.preset_status = format!("not saved: {e}"),
+            }
+        }
+
+        let names = shell.preset_names.clone().unwrap_or_default();
+        let mut load: Option<String> = None;
+        let mut remove: Option<String> = None;
+        for name in &names {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(name).size(12.0).color(skin::TEXT.gamma_multiply(0.92)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if skin::action(ui, "×").on_hover_text("delete this preset").clicked() {
+                        remove = Some(name.clone());
+                    }
+                    if skin::action(ui, "Load").clicked() {
+                        load = Some(name.clone());
+                    }
+                });
+            });
+        }
+        if let Some(name) = load {
+            let schema = shell.runner.schema();
+            match presets::load(&root, app, &name, schema, shell.runner.params_mut()) {
+                Ok(n) => {
+                    shell.preset_status = format!("loaded {name}: {n} of {} parameters", schema.len());
+                    shell.preset_name = name;
+                }
+                Err(e) => shell.preset_status = format!("not loaded: {e}"),
+            }
+        }
+        if let Some(name) = remove {
+            shell.preset_status = match presets::delete(&root, app, &name) {
+                Ok(()) => format!("deleted {name}"),
+                Err(e) => format!("not deleted: {e}"),
+            };
+            shell.preset_names = None;
+        }
+
+        if !shell.preset_status.is_empty() {
+            ui.label(egui::RichText::new(&shell.preset_status).size(11.0).color(skin::MUTED));
+        }
+        ui.add_space(8.0);
+    }
+
+    /// One parameter, drawn as whatever its kind calls for, with two things every kind
+    /// shares: a right-click puts it back to its default, and resting the pointer on it
+    /// shows what it does.
     fn parameter<A: App>(
+        shell: &mut Shell<A>,
+        ui: &mut egui::Ui,
+        index: usize,
+        def: &ParamDef,
+    ) {
+        let response = ui.scope(|ui| control_for(shell, ui, index, def)).response;
+        if !ui.rect_contains_pointer(response.rect) {
+            return;
+        }
+        // Read from the raw pointer rather than the control's response: the control
+        // owns the primary button for dragging, and the reset must work anywhere on the
+        // row, label included.
+        if ui.input(|i| i.pointer.secondary_clicked()) {
+            shell.runner.params_mut().set_u32(index, def.default_word());
+        }
+        let default = match def.kind {
+            ParamKind::Float => control::format(def.default, def.min, def.max, def.step),
+            ParamKind::Int => format!("{}", def.default as u32),
+            ParamKind::Toggle => if def.default != 0.0 { "on".into() } else { "off".into() },
+            ParamKind::Choice => def.options.get(def.default as usize).copied().unwrap_or("?").into(),
+        };
+        response.on_hover_ui(|ui| {
+            ui.set_max_width(240.0);
+            if !def.description.is_empty() {
+                ui.label(egui::RichText::new(def.description).size(12.0).color(skin::TEXT));
+            }
+            ui.label(
+                egui::RichText::new(format!("default {default} · right-click to reset"))
+                    .size(11.0)
+                    .color(skin::MUTED),
+            );
+        });
+    }
+
+    fn control_for<A: App>(
         shell: &mut Shell<A>,
         ui: &mut egui::Ui,
         index: usize,

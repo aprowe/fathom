@@ -49,6 +49,8 @@ pub struct ParamDef {
     /// a handful of parameters worth reaching for and a long tail that exists so the
     /// first few can be trusted — this marks the tail, without hiding it.
     pub advanced: bool,
+    /// What the parameter does, for the control's tooltip. Empty means no tooltip.
+    pub description: &'static str,
 }
 
 impl ParamDef {
@@ -64,6 +66,7 @@ impl ParamDef {
             group: "General",
             options: &[],
             advanced: false,
+            description: "",
         }
     }
 
@@ -79,6 +82,7 @@ impl ParamDef {
             group: "General",
             options: &[],
             advanced: false,
+            description: "",
         }
     }
 
@@ -94,6 +98,7 @@ impl ParamDef {
             group: "General",
             options: &[],
             advanced: false,
+            description: "",
         }
     }
 
@@ -114,6 +119,7 @@ impl ParamDef {
             group: "General",
             options,
             advanced: false,
+            description: "",
         }
     }
 
@@ -126,6 +132,12 @@ impl ParamDef {
     /// File this control behind its group's disclosure.
     pub const fn advanced(mut self) -> Self {
         self.advanced = true;
+        self
+    }
+
+    /// Say what the parameter does. Shown when the pointer rests on its label.
+    pub const fn describe(mut self, description: &'static str) -> Self {
+        self.description = description;
         self
     }
 
@@ -285,6 +297,67 @@ impl<'a> Params<'a> {
     }
 }
 
+/// Saving and loading a block by parameter *name*.
+///
+/// A preset written by index would silently scramble the moment a parameter was added
+/// in the middle of a schema. Keyed by name, a preset survives reordering, survives new
+/// parameters (they keep their current value), and reads as a document a person can
+/// edit: `"cutoff": 0.02`, `"triangle": true`, `"profile": "Well"`.
+impl ParamBlock {
+    /// Every parameter in the schema as a flat JSON object, keyed by name.
+    ///
+    /// Toggles are written as booleans and choices as their option label, so the file
+    /// says what was chosen rather than which slot it sat in.
+    pub fn to_json(&self, schema: &[ParamDef]) -> serde_json::Value {
+        let mut map = serde_json::Map::with_capacity(schema.len());
+        for (i, def) in schema.iter().enumerate() {
+            let value = match def.kind {
+                ParamKind::Float => serde_json::Value::from(self.f32(i)),
+                ParamKind::Int => serde_json::Value::from(self.u32(i)),
+                ParamKind::Toggle => serde_json::Value::from(self.u32(i) != 0),
+                ParamKind::Choice => match def.options.get(self.u32(i) as usize) {
+                    Some(label) => serde_json::Value::from(*label),
+                    None => serde_json::Value::from(self.u32(i)),
+                },
+            };
+            map.insert(def.name.to_string(), value);
+        }
+        serde_json::Value::Object(map)
+    }
+
+    /// Set every parameter the object names. Unknown names are ignored, parameters the
+    /// object leaves out keep their value, and every value is clamped to its range.
+    /// Returns how many parameters were set.
+    ///
+    /// A choice accepts either its option label or an index, so a hand-edited file and
+    /// an older one written by index both load.
+    pub fn apply_json(&mut self, schema: &[ParamDef], value: &serde_json::Value) -> usize {
+        let Some(map) = value.as_object() else { return 0 };
+        let mut applied = 0;
+        for (i, def) in schema.iter().enumerate() {
+            let Some(v) = map.get(def.name) else { continue };
+            let word = match def.kind {
+                ParamKind::Float => v.as_f64().map(|f| (f as f32).clamp(def.min, def.max).to_bits()),
+                ParamKind::Int => v.as_f64().map(|f| (f as f32).clamp(def.min, def.max) as u32),
+                ParamKind::Toggle => v
+                    .as_bool()
+                    .or_else(|| v.as_f64().map(|f| f != 0.0))
+                    .map(u32::from),
+                ParamKind::Choice => v
+                    .as_str()
+                    .and_then(|s| def.options.iter().position(|o| *o == s))
+                    .map(|i| i as u32)
+                    .or_else(|| v.as_f64().map(|f| (f as f32).clamp(def.min, def.max) as u32)),
+            };
+            if let Some(word) = word {
+                self.set_u32(i, word);
+                applied += 1;
+            }
+        }
+        applied
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +375,38 @@ mod tests {
         assert_eq!(p.float(0), 1.5);
         assert!(p.toggle(1));
         assert_eq!(p.int(2), 2);
+    }
+
+    #[test]
+    fn a_block_round_trips_through_json_by_name() {
+        let mut block = ParamBlock::from_defaults(SCHEMA);
+        block.set_f32(0, 3.25);
+        block.set_u32(1, 0);
+        block.set_u32(2, 1);
+        let json = block.to_json(SCHEMA);
+        assert_eq!(json["g"], 3.25);
+        assert_eq!(json["trails"], false);
+        assert_eq!(json["mode"], "b", "a choice is written as its label");
+
+        let mut restored = ParamBlock::from_defaults(SCHEMA);
+        assert_eq!(restored.apply_json(SCHEMA, &json), 3);
+        assert_eq!(restored.f32(0), 3.25);
+        assert_eq!(restored.u32(1), 0);
+        assert_eq!(restored.u32(2), 1);
+    }
+
+    /// A preset must outlive the schema it was written against: a renamed or removed
+    /// parameter is skipped, a new one keeps its default, and a value that has fallen
+    /// outside a narrowed range is pulled back in rather than rejected.
+    #[test]
+    fn a_preset_survives_a_schema_that_has_moved_on() {
+        let json = serde_json::json!({ "g": 99.0, "gone": 1, "mode": 1 });
+        let mut block = ParamBlock::from_defaults(SCHEMA);
+        assert_eq!(block.apply_json(SCHEMA, &json), 2);
+        assert_eq!(block.f32(0), 5.0, "clamped to the slider's max");
+        assert!(block.u32(1) != 0, "an unmentioned toggle keeps its default");
+        assert_eq!(block.u32(2), 1, "a choice by index still loads");
+        assert_eq!(block.apply_json(SCHEMA, &serde_json::json!([1, 2])), 0);
     }
 
     #[test]
