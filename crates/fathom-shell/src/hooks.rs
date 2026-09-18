@@ -51,7 +51,7 @@ pub trait ShellApp: App {
     /// parameters in it have been applied.
     fn load_state(&mut self, _state: &Value, _ctx: &mut ShellCtx<'_>) {}
 
-    /// A file dropped on the window, or chosen with Open…, that is not a preset for this
+    /// A file dropped on the window, or chosen with Import…, that is not a preset for this
     /// app. Whatever the app makes of it is its business.
     fn file_received(&mut self, _name: &str, _bytes: &[u8], _ctx: &mut ShellCtx<'_>) {}
 }
@@ -130,6 +130,7 @@ pub(crate) enum Request {
     DeletePreset(String),
     Command(String, Value),
     Status(String),
+    SaveFile(String, Vec<u8>),
 }
 
 impl Controls {
@@ -159,14 +160,20 @@ impl Controls {
         self.panel_width
     }
 
-    /// Show the Save… dialog: the OS's natively, a download on the web.
+    /// Show the Export… dialog: the OS's natively, a download on the web.
     pub fn save_dialog(&mut self) {
         self.requests.push(Request::SaveDialog);
     }
 
-    /// Show the Open… dialog: the OS's natively, a file picker on the web.
+    /// Show the Import… dialog: the OS's natively, a file picker on the web.
     pub fn open_dialog(&mut self) {
         self.requests.push(Request::OpenDialog);
+    }
+
+    /// Offer `bytes` to the user as a file: the OS save dialog natively, a download on
+    /// the web. `file_name` is the suggestion, extension included.
+    pub fn save_file(&mut self, file_name: impl Into<String>, bytes: Vec<u8>) {
+        self.requests.push(Request::SaveFile(file_name.into(), bytes));
     }
 
     /// The presets available right now, built in and from the folder, merged.

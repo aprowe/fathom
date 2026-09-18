@@ -1,7 +1,7 @@
-//! Save… and Open…, on both targets.
+//! Export… and Import…, on both targets.
 //!
-//! Natively they are the OS dialogs. On the web, Open… is the browser's file picker and
-//! Save… is a download, because that is what those words mean there. Either way the
+//! Natively they are the OS dialogs. On the web, Import… is the browser's file picker and
+//! Export… is a download, because that is what those words mean there. Either way the
 //! result arrives later, on a channel the shell polls once a frame: a native dialog
 //! runs on its own thread so the window keeps repainting behind it, and a web dialog
 //! is a promise.
@@ -45,7 +45,7 @@ impl Dialogs {
         self.rx.try_iter().collect()
     }
 
-    /// Show the Open… dialog. `directory` is where it starts, when the target has such a
+    /// Show the Import… dialog. `directory` is where it starts, when the target has such a
     /// thing; `extensions` filters what it shows, without the dot.
     pub fn open(&self, directory: Option<PathBuf>, extensions: &'static [&'static str]) {
         platform::open(self.tx.clone(), directory, extensions);
@@ -56,7 +56,7 @@ impl Dialogs {
         platform::read_dropped(self.tx.clone(), file);
     }
 
-    /// Show the Save… dialog for `bytes`, suggesting `file_name`.
+    /// Show the Export… dialog for `bytes`, suggesting `file_name`.
     pub fn save(&self, directory: Option<PathBuf>, file_name: String, extensions: &'static [&'static str], bytes: Vec<u8>) {
         platform::save(self.tx.clone(), directory, file_name, extensions, bytes);
     }

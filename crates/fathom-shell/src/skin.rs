@@ -441,9 +441,9 @@ pub fn padlock(ui: &mut Ui, key: &str, locked: bool) -> Response {
     let (rect, response) =
         ui.allocate_exact_size(vec2(14.0, ROW), Sense::click());
     let response = response.on_hover_text(if locked {
-        "Locked: Randomize leaves this alone. Click to unlock."
+        "Locked: Randomize and presets leave this alone. Click to unlock."
     } else {
-        "Click to lock this out of Randomize."
+        "Click to lock this value in, against Randomize and presets."
     });
     let _ = key;
     let ink = if locked {
@@ -528,6 +528,34 @@ pub fn row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add).inner
     })
     .inner
+}
+
+/// A small panel that opens under a button and closes on a click elsewhere or Escape:
+/// for the one or two fields an action needs before it can go ahead, so the panel does
+/// not carry them permanently. `content` may call `ui.close()` when it is done.
+pub fn popover<R>(
+    button: &Response,
+    width: f32,
+    content: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let frame = egui::Frame::NONE
+        .fill(PANEL)
+        .stroke(Stroke::new(1.0, LINE))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .shadow(egui::Shadow {
+            offset: [0, 4],
+            blur: 14,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(120),
+        });
+    egui::Popup::menu(button)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .frame(frame)
+        .width(width)
+        .gap(4.0)
+        .show(content)
+        .map(|r| r.inner)
 }
 
 /// A flat action button that lights up on hover instead of inflating.

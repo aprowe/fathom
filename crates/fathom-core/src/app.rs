@@ -31,15 +31,18 @@ pub struct CommandDef {
     pub initial: u32,
     /// What the command does, for the control's tooltip. Empty means no tooltip.
     pub description: &'static str,
+    /// A button drawn at the top of the panel beside Randomize, on every tab, instead
+    /// of under its group: for the two or three actions reached for constantly.
+    pub pinned: bool,
 }
 
 impl CommandDef {
     pub const fn button(name: &'static str, label: &'static str) -> Self {
-        Self { name, label, group: "Actions", tab: "", options: &[], initial: 0, description: "" }
+        Self { name, label, group: "Actions", tab: "", options: &[], initial: 0, description: "", pinned: false }
     }
 
     pub const fn choice(name: &'static str, label: &'static str, options: &'static [&'static str]) -> Self {
-        Self { name, label, group: "Actions", tab: "", options, initial: 0, description: "" }
+        Self { name, label, group: "Actions", tab: "", options, initial: 0, description: "", pinned: false }
     }
 
     pub const fn group(mut self, group: &'static str) -> Self {
@@ -61,6 +64,13 @@ impl CommandDef {
     /// Say what the command does, for the tooltip.
     pub const fn describe(mut self, description: &'static str) -> Self {
         self.description = description;
+        self
+    }
+
+    /// Draw this button at the top of the panel beside Randomize, on every tab. Only
+    /// buttons pin; a choice stays with its group.
+    pub const fn pinned(mut self) -> Self {
+        self.pinned = true;
         self
     }
 }

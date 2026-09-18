@@ -52,6 +52,9 @@ pub struct ParamDef {
     /// a handful of parameters worth reaching for and a long tail that exists so the
     /// first few can be trusted — this marks the tail, without hiding it.
     pub advanced: bool,
+    /// Starts locked: Randomize and presets leave it alone until the user unlocks it.
+    /// For the controls that set up the experiment rather than being part of it.
+    pub locked: bool,
     /// What the parameter does, for the control's tooltip. Empty means no tooltip.
     pub description: &'static str,
 }
@@ -70,6 +73,7 @@ impl ParamDef {
             tab: "",
             options: &[],
             advanced: false,
+            locked: false,
             description: "",
         }
     }
@@ -87,6 +91,7 @@ impl ParamDef {
             tab: "",
             options: &[],
             advanced: false,
+            locked: false,
             description: "",
         }
     }
@@ -104,6 +109,7 @@ impl ParamDef {
             tab: "",
             options: &[],
             advanced: false,
+            locked: false,
             description: "",
         }
     }
@@ -126,6 +132,7 @@ impl ParamDef {
             tab: "",
             options,
             advanced: false,
+            locked: false,
             description: "",
         }
     }
@@ -151,6 +158,12 @@ impl ParamDef {
     /// Say what the parameter does. Shown when the pointer rests on its label.
     pub const fn describe(mut self, description: &'static str) -> Self {
         self.description = description;
+        self
+    }
+
+    /// Start locked. See [`ParamDef::locked`].
+    pub const fn locked(mut self) -> Self {
+        self.locked = true;
         self
     }
 

@@ -34,7 +34,7 @@ pub use presets::{Preset, Source};
 
 use hooks::Request;
 
-/// The extensions the Open… dialog shows and Save… suggests.
+/// The extensions the Import… dialog shows and Export… suggests.
 const PRESET_EXTENSIONS: &[&str] = &["json"];
 
 /// The texture the simulation draws into, and its identity inside egui.
@@ -132,8 +132,10 @@ impl<A: ShellApp> Shell<A> {
             panel_width_requested: None,
             viewport_rect: egui::Rect::ZERO,
             egui: egui.clone(),
-            rng: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            // `web_time` is `std::time` natively and `performance.now()` on the web, where
+            // std's clock panics.
+            rng: web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0x9E37_79B9_7F4A_7C15)
                 | 1,
@@ -168,7 +170,7 @@ impl<A: ShellApp> Shell<A> {
     fn randomize(&mut self, ui: &egui::Ui) {
         let schema = self.runner.schema();
         for (index, def) in schema.iter().enumerate() {
-            if panel::is_locked(ui, def.name) {
+            if panel::is_locked(ui, def) {
                 continue;
             }
             let u = self.random_unit();
@@ -260,6 +262,10 @@ impl<A: ShellApp> Shell<A> {
                 Request::DeletePreset(name) => self.delete_preset(&name),
                 Request::Command(name, value) => self.dispatch(&name, value),
                 Request::Status(text) => self.status = text,
+                Request::SaveFile(name, bytes) => {
+                    let ext: &'static [&'static str] = if name.ends_with(".json") { &["json"] } else { &[] };
+                    self.dialogs.save(None, name, ext, bytes);
+                }
             }
         }
     }
@@ -352,7 +358,7 @@ impl<A: ShellApp> Shell<A> {
 
     #[cfg(target_arch = "wasm32")]
     fn save_preset(&mut self, _name: &str) {
-        self.status = "no folder on the web: use Save… to download".into();
+        self.status = "no folder on the web: use Export… to download".into();
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -371,9 +377,21 @@ impl<A: ShellApp> Shell<A> {
             .filter(|doc| doc.is_for(descriptor.name));
         match preset {
             Some(doc) => {
-                let n = doc.apply(self.runner.schema(), self.runner.params_mut());
+                // A locked control keeps its value through a preset, as through Randomize.
+                let schema = self.runner.schema();
+                let held: Vec<(usize, u32)> = schema
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, def)| panel::is_locked_in(&egui, def))
+                    .map(|(i, _)| (i, self.runner.params().u32(i)))
+                    .collect();
+                let n = doc.apply(schema, self.runner.params_mut());
+                for &(i, word) in &held {
+                    self.runner.params_mut().set_u32(i, word);
+                }
                 self.hook(&egui, |app, ctx| app.load_state(&doc.state, ctx));
-                self.status = format!("loaded {name}: {n} of {} parameters", descriptor.params.len());
+                let kept = if held.is_empty() { String::new() } else { format!(", {} locked", held.len()) };
+                self.status = format!("loaded {name}: {n} of {} parameters{kept}", descriptor.params.len());
             }
             None => {
                 self.hook(&egui, |app, ctx| app.file_received(name, bytes, ctx));
@@ -425,6 +443,7 @@ impl<A: ShellApp> eframe::App for Shell<A> {
         self.receive_files(&egui);
 
         panel::draw(self, ui);
+        panel::title_bar(self, ui);
 
         let ppp = ui.ctx().pixels_per_point();
         egui::CentralPanel::no_frame()
@@ -476,14 +495,28 @@ mod input {
     ) {
         let local = |p: egui::Pos2| ((p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp);
 
+        // Wheel notches are read raw, per event, not from egui's smoothed scroll: that
+        // spreads one notch over several frames and adds momentum, which is right for a
+        // scrolling list and wrong for a zoom, where it reads as lag and overshoot. Each
+        // unit is brought to the browser's ~100 px per notch so a notch zooms the same
+        // amount on every target; a trackpad pinch arrives as a zoom factor and is turned
+        // back into the pixels that would have produced it.
         let (shift, ctrl, alt, pointer, scroll) = ui.input(|i| {
-            (
-                i.modifiers.shift,
-                i.modifiers.ctrl,
-                i.modifiers.alt,
-                i.pointer.interact_pos(),
-                i.smooth_scroll_delta.y,
-            )
+            let mut scroll = 0.0;
+            for event in &i.events {
+                match event {
+                    egui::Event::MouseWheel { unit, delta, .. } => {
+                        scroll += match unit {
+                            egui::MouseWheelUnit::Point => delta.y,
+                            egui::MouseWheelUnit::Line => delta.y * 100.0,
+                            egui::MouseWheelUnit::Page => delta.y * 800.0,
+                        };
+                    }
+                    egui::Event::Zoom(factor) => scroll += factor.ln() * 400.0,
+                    _ => {}
+                }
+            }
+            (i.modifiers.shift, i.modifiers.ctrl, i.modifiers.alt, i.pointer.interact_pos(), scroll)
         });
 
         let mouse = |p: egui::Pos2, button: u8, buttons: u8| {
@@ -600,7 +633,49 @@ mod panel {
             shell.panel_width = response.response.rect.width();
         }
 
-        transport(shell, ui, compact);
+        if compact {
+            controls_toggle(shell, ui);
+        }
+    }
+
+    /// The sketch's name on the left and the transport on the right, in a bar across the
+    /// top of the canvas. Shown after the controls panel so it spans the canvas and not
+    /// the panel.
+    pub fn title_bar<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
+        let descriptor = Runner::<A>::descriptor();
+        let compact = ui.ctx().content_rect().width() < COMPACT_WIDTH;
+        egui::Panel::top("fathom-title")
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::NONE
+                    .fill(skin::PANEL)
+                    .inner_margin(egui::Margin::symmetric(16, 8)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(descriptor.name)
+                            .family(skin::semibold())
+                            .size(15.0)
+                            .color(skin::TEXT),
+                    )
+                    .on_hover_text(shell.runner.gpu().describe_adapter());
+                    right_aligned(ui, "fathom-transport-width", |ui| transport_row(shell, ui, compact));
+                });
+            });
+    }
+
+    /// Lay `add` out left to right, flush with the right edge, by last frame's measured
+    /// width: drawing a row right to left would reverse every value and its unit.
+    fn right_aligned(ui: &mut egui::Ui, key: &str, add: impl FnOnce(&mut egui::Ui)) {
+        let id = ui.id().with(key);
+        let known: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
+        ui.add_space((ui.available_width() - known).max(0.0));
+        let start = ui.cursor().min.x;
+        add(ui);
+        let width = ui.min_rect().right() - start;
+        ui.data_mut(|d| d.insert_temp(id, width));
     }
 
     fn panel_frame() -> egui::Frame {
@@ -671,27 +746,16 @@ mod panel {
     fn contents<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui, compact: bool) {
         let descriptor = Runner::<A>::descriptor();
 
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(descriptor.name)
-                    .family(skin::semibold())
-                    .size(17.0)
-                    .color(skin::TEXT),
-            );
-            if compact {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if skin::action(ui, "Close").clicked() {
-                        shell.drawer_open = false;
-                    }
-                });
-            }
-        });
-        ui.label(
-            egui::RichText::new(shell.runner.gpu().describe_adapter())
-                .size(11.0)
-                .color(skin::MUTED),
-        );
-        ui.add_space(6.0);
+        // The sketch's name lives in the bar over the canvas, so the panel starts
+        // straight in on the controls. The drawer alone needs a way to be dismissed.
+        if compact {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if skin::action(ui, "Close").clicked() {
+                    shell.drawer_open = false;
+                }
+            });
+            ui.add_space(6.0);
+        }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Presets and Randomize sit above the tabs: they act on the whole block, so
@@ -699,12 +763,19 @@ mod panel {
             if descriptor.presets_section {
                 preset_section(shell, ui);
             }
-            ui.horizontal(|ui| {
+            // Randomize, then the app's pinned buttons: the actions reached for
+            // constantly, so they are on every tab.
+            ui.horizontal_wrapped(|ui| {
                 if skin::action(ui, "Randomize")
-                    .on_hover_text("Roll every unlocked parameter. Click a padlock to keep one where it is.")
+                    .on_hover_text("Roll every unlocked parameter. Click a padlock to keep one where it is, through Randomize and presets alike.")
                     .clicked()
                 {
                     shell.randomize(ui);
+                }
+                for def in descriptor.commands.iter().filter(|c| c.pinned && c.options.is_empty()) {
+                    if command_button(ui, def).clicked() {
+                        shell.dispatch(def.name, serde_json::json!({}));
+                    }
                 }
             });
             ui.add_space(8.0);
@@ -737,7 +808,7 @@ mod panel {
                 }
             }
             for c in descriptor.commands {
-                if on_tab(c.tab) && !groups.contains(&c.group) {
+                if on_tab(c.tab) && !c.pinned && !groups.contains(&c.group) {
                     groups.push(c.group);
                 }
             }
@@ -779,12 +850,17 @@ mod panel {
         });
     }
 
-    /// Whether a parameter is held out of Randomize. Remembered by name, with the rest
-    /// of the panel's state. Everything starts locked: Randomize is opt-in per control,
-    /// so a stray click cannot scramble a block the user has just tuned.
-    pub fn is_locked(ui: &egui::Ui, name: &str) -> bool {
-        let id = lock_id(name);
-        ui.data_mut(|d| *d.get_persisted_mut_or(id, true))
+    /// Whether a parameter is held where it is: Randomize and presets leave a locked
+    /// control alone. Remembered by name, with the rest of the panel's state. A control
+    /// starts locked only if its definition says so: the ones that set up the experiment
+    /// rather than being part of it.
+    pub fn is_locked(ui: &egui::Ui, def: &ParamDef) -> bool {
+        is_locked_in(ui.ctx(), def)
+    }
+
+    pub fn is_locked_in(ctx: &egui::Context, def: &ParamDef) -> bool {
+        let id = lock_id(def.name);
+        ctx.data_mut(|d| *d.get_persisted_mut_or(id, def.locked))
     }
 
     /// Keyed on the name alone, not off a `Ui`: the flag is read in the row's parent
@@ -798,85 +874,114 @@ mod panel {
         ui.data_mut(|d| d.insert_persisted(id, locked));
     }
 
-    /// Save… and Open… as files, a typed name that saves into the folder, and the list
-    /// of what is available: built in and from the folder, merged. See [`presets`].
+    /// The preset picker, then the actions on one row: Save… names a copy into the
+    /// folder (natively; the web has no folder), Import… and Export… move files in and
+    /// out. See [`presets`].
     fn preset_section<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
         if !skin::group_header(ui, "Presets", true) {
             return;
         }
         shell.list_presets();
 
-        ui.horizontal(|ui| {
-            if skin::action(ui, "Save…")
-                .on_hover_text(if cfg!(target_arch = "wasm32") {
-                    "Download the current parameters as a .json file."
-                } else {
-                    "Write the current parameters to a file of your choosing."
-                })
-                .clicked()
-            {
-                shell.save_dialog();
-            }
-            if skin::action(ui, "Open…")
-                .on_hover_text("Load parameters from a .json file. Dropping one on the window does the same.")
-                .clicked()
-            {
-                shell.open_dialog();
-            }
-        });
-
-        // The folder is a native thing. On the web the list is what was built in, and
-        // a file you want to keep is a download.
-        let mut save = false;
-        if !cfg!(target_arch = "wasm32") {
-            ui.horizontal(|ui| {
-                let edit = egui::TextEdit::singleline(&mut shell.preset_name)
-                    .hint_text("name")
-                    .font(egui::FontId::proportional(12.0))
-                    .desired_width(ui.available_width() - 56.0);
-                let response = ui.add(edit);
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    save = true;
-                }
-                if skin::action(ui, "Save")
-                    .on_hover_text("Save into the presets folder under this name, so it appears in the list below.")
-                    .clicked()
-                {
-                    save = true;
-                }
-            });
-        }
-        if save {
-            let name = shell.preset_name.clone();
-            shell.save_preset(&name);
-        }
-
+        // One dropdown of everything available. Picking an entry loads it; the entry
+        // shown is the last one loaded, or nothing if the sliders have been moved off
+        // a named preset by hand.
         let listed = shell.controls.presets.clone();
+        let current = listed.iter().position(|p| p.name == shell.preset_name);
+        let selected_text = current.map(|i| listed[i].name.as_str()).unwrap_or("—");
         let mut load: Option<String> = None;
         let mut remove: Option<String> = None;
-        for preset in &listed {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&preset.name).size(12.0).color(skin::TEXT.gamma_multiply(0.92)));
-                if preset.source == Source::BuiltIn {
-                    ui.label(egui::RichText::new("built in").size(10.0).color(skin::MUTED));
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Preset").size(12.0).color(skin::TEXT.gamma_multiply(0.92)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(i) = current
+                    && listed[i].source == Source::Folder
+                    && skin::action(ui, "×").on_hover_text("Delete this preset from the folder.").clicked()
+                {
+                    remove = Some(listed[i].name.clone());
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if preset.source == Source::Folder
-                        && skin::action(ui, "×").on_hover_text("delete this preset").clicked()
-                    {
-                        remove = Some(preset.name.clone());
-                    }
-                    if skin::action(ui, "Load").clicked() {
-                        load = Some(preset.name.clone());
-                    }
-                });
+                egui::ComboBox::from_id_salt("fathom.preset")
+                    .selected_text(selected_text)
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        if listed.is_empty() {
+                            ui.label(egui::RichText::new("none yet").size(12.0).color(skin::MUTED));
+                        }
+                        for (i, preset) in listed.iter().enumerate() {
+                            let mut text = egui::RichText::new(&preset.name);
+                            if preset.source == Source::BuiltIn {
+                                text = text.color(skin::TEXT.gamma_multiply(0.75));
+                            }
+                            let response = ui.selectable_label(current == Some(i), text);
+                            let response = if preset.source == Source::BuiltIn {
+                                response.on_hover_text("built in")
+                            } else {
+                                response
+                            };
+                            if response.clicked() {
+                                load = Some(preset.name.clone());
+                            }
+                        }
+                    });
             });
-        }
+        });
         if let Some(name) = load {
             shell.load_preset(&name);
         }
         if let Some(name) = remove {
             shell.delete_preset(&name);
+        }
+
+        ui.add_space(4.0);
+        let mut save: Option<String> = None;
+        ui.horizontal(|ui| {
+            // The folder is a native thing. On the web the list is what was built in, and
+            // a file you want to keep is an export.
+            if !cfg!(target_arch = "wasm32") {
+                let button = skin::action(ui, "Save…")
+                    .on_hover_text("Keep the current settings in the presets folder under a name of your choosing.");
+                skin::popover(&button, 220.0, |ui| {
+                    ui.label(egui::RichText::new("Save as").size(11.0).color(skin::MUTED));
+                    let edit = egui::TextEdit::singleline(&mut shell.preset_name)
+                        .hint_text("name")
+                        .font(egui::FontId::proportional(12.0))
+                        .desired_width(f32::INFINITY);
+                    let response = ui.add(edit);
+                    if button.clicked() {
+                        response.request_focus();
+                    }
+                    let entered = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.add_space(4.0);
+                    let confirmed = ui
+                        .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            skin::action(ui, "Save").clicked()
+                        })
+                        .inner;
+                    if (entered || confirmed) && !shell.preset_name.trim().is_empty() {
+                        save = Some(shell.preset_name.trim().to_string());
+                        ui.close();
+                    }
+                });
+            }
+            if skin::action(ui, "Import…")
+                .on_hover_text("Load settings from a .json file. Dropping one on the window does the same.")
+                .clicked()
+            {
+                shell.open_dialog();
+            }
+            if skin::action(ui, "Export…")
+                .on_hover_text(if cfg!(target_arch = "wasm32") {
+                    "Download the current settings as a .json file."
+                } else {
+                    "Write the current settings to a .json file of your choosing."
+                })
+                .clicked()
+            {
+                shell.save_dialog();
+            }
+        });
+        if let Some(name) = save {
+            shell.save_preset(&name);
         }
 
         if !shell.status.is_empty() {
@@ -894,8 +999,8 @@ mod panel {
         index: usize,
         def: &ParamDef,
     ) {
-        let locked = is_locked(ui, def.name);
-        let response = ui
+        let locked = is_locked(ui, def);
+        let mut response = ui
             .horizontal(|ui| {
                 if skin::padlock(ui, def.name, locked).clicked() {
                     set_locked(ui, def.name, !locked);
@@ -906,6 +1011,10 @@ mod panel {
         if !ui.rect_contains_pointer(response.rect) {
             return;
         }
+        // egui reports only the topmost interactive widget as hovered, and over most of
+        // the row that is the control itself, so the row never counts as hovered and its
+        // tooltip would never show. The pointer is in the row: say so.
+        response.flags |= egui::response::Flags::HOVERED;
         // Read from the raw pointer rather than the control's response: the control
         // owns the primary button for dragging, and the reset must work anywhere on the
         // row, label included.
@@ -923,7 +1032,7 @@ mod panel {
             if !def.description.is_empty() {
                 ui.label(egui::RichText::new(def.description).size(12.0).color(skin::TEXT));
             }
-            let held = if locked { " · locked out of Randomize" } else { "" };
+            let held = if locked { " · locked: kept through Randomize and presets" } else { "" };
             ui.label(
                 egui::RichText::new(format!("default {default} · right-click to reset{held}"))
                     .size(11.0)
@@ -990,6 +1099,16 @@ mod panel {
         }
     }
 
+    /// A command's button, with its description on hover.
+    fn command_button(ui: &mut egui::Ui, def: &fathom_core::CommandDef) -> egui::Response {
+        let response = skin::action(ui, def.label);
+        if def.description.is_empty() {
+            response
+        } else {
+            response.on_hover_text(def.description)
+        }
+    }
+
     /// The commands filed under one group: selects first, then the buttons on one row.
     fn commands<A: ShellApp>(
         shell: &mut Shell<A>,
@@ -1002,8 +1121,11 @@ mod panel {
                 continue;
             }
             let selected = shell.choice_of(def.name, def.initial as usize);
-            let scoped = ui.scope(|ui| choice(ui, def.name, def.label, def.options, selected));
-            if !def.description.is_empty() {
+            let mut scoped = ui.scope(|ui| choice(ui, def.name, def.label, def.options, selected));
+            if !def.description.is_empty() && ui.rect_contains_pointer(scoped.response.rect) {
+                // As for parameters: the segments underneath take the hover, so the row
+                // must claim it to get a tooltip.
+                scoped.response.flags |= egui::response::Flags::HOVERED;
                 scoped.response.on_hover_text(def.description);
             }
             if let Some(picked) = scoped.inner {
@@ -1015,19 +1137,13 @@ mod panel {
         let buttons: Vec<_> = descriptor
             .commands
             .iter()
-            .filter(|c| c.group == group && c.options.is_empty())
+            .filter(|c| c.group == group && c.options.is_empty() && !c.pinned)
             .collect();
         if !buttons.is_empty() {
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 for def in buttons {
-                    let response = skin::action(ui, def.label);
-                    let response = if def.description.is_empty() {
-                        response
-                    } else {
-                        response.on_hover_text(def.description)
-                    };
-                    if response.clicked() {
+                    if command_button(ui, def).clicked() {
                         shell.dispatch(def.name, serde_json::json!({}));
                     }
                 }
@@ -1035,83 +1151,58 @@ mod panel {
         }
     }
 
-    /// Play, step, recentre, and the frame counters.
-    /// A floating bar rather than a docked one, the same arrangement the web panel uses:
-    /// interface over simulation, and no strip of chrome eating height on a phone.
-    fn transport<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui, compact: bool) {
-        let ctx = ui.ctx().clone();
+    /// Run or pause, recentre, the frame rate and a running light, in one row on the
+    /// title bar.
+    fn transport_row<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui, compact: bool) {
+        let paused = shell.runner.is_paused();
+        let label = if paused { "Run" } else { "Pause" };
+        if skin::action(ui, label).clicked() {
+            let command = if paused { "fathom.resume" } else { "fathom.pause" };
+            shell.dispatch(command, serde_json::Value::Null);
+        }
+        if skin::action(ui, "Recentre").clicked() {
+            shell.dispatch("fathom.reset_camera", serde_json::Value::Null);
+        }
 
-        egui::Area::new(egui::Id::new("fathom-transport"))
+        ui.add_space(6.0);
+        let stats = shell.runner.stats();
+        ui.label(
+            egui::RichText::new(format!("{:.0}", stats.fps))
+                .family(egui::FontFamily::Monospace)
+                .size(11.0)
+                .color(skin::TEXT),
+        );
+        ui.label(egui::RichText::new("fps").size(11.0).color(skin::MUTED));
+        ui.add_space(4.0);
+
+        // A dot rather than a word carries the state at a glance; the word is there for
+        // anyone who needs it spelled out.
+        let (dot, word) = if paused { (skin::WARM, "Paused") } else { (skin::ACCENT, "Running") };
+        let (r, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
+        ui.painter().circle_filled(r.center(), 3.0, dot);
+        if !compact {
+            ui.label(egui::RichText::new(word).size(11.0).color(skin::MUTED));
+        }
+    }
+
+    /// The button that opens the drawer, floating over the simulation's corner. While
+    /// the drawer is out it covers this corner, and the scrim, Escape and the drawer's
+    /// own Close button are all available, so the toggle stands down.
+    fn controls_toggle<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui) {
+        if shell.drawer_open {
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        egui::Area::new(egui::Id::new("fathom-controls-toggle"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(16.0, -16.0))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
             .show(&ctx, |ui| {
                 floating_frame().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                let paused = shell.runner.is_paused();
-                let label = if paused { "Run" } else { "Pause" };
-                if skin::action(ui, label).clicked() {
-                    let command = if paused { "fathom.resume" } else { "fathom.pause" };
-                    shell.dispatch(command, serde_json::Value::Null);
-                }
-                ui.add_enabled_ui(paused, |ui| {
-                    if skin::action(ui, "Step").clicked() {
-                        shell.dispatch("fathom.step", serde_json::Value::Null);
+                    if skin::action(ui, "Controls").clicked() {
+                        shell.drawer_open = true;
                     }
-                });
-                if skin::action(ui, "Recentre").clicked() {
-                    shell.dispatch("fathom.reset_camera", serde_json::Value::Null);
-                }
-
-                ui.add_space(6.0);
-                let stats = shell.runner.stats();
-                let mut readouts = vec![(format!("{:.0}", stats.fps), "fps")];
-                if !compact {
-                    readouts.push((format!("{:.1}", stats.frame_ms), "ms"));
-                }
-                for (value, unit) in readouts {
-                    ui.label(
-                        egui::RichText::new(value)
-                            .family(egui::FontFamily::Monospace)
-                            .size(11.0)
-                            .color(skin::TEXT),
-                    );
-                    if !compact {
-                        ui.label(egui::RichText::new(unit).size(11.0).color(skin::MUTED));
-                    }
-                    ui.add_space(4.0);
-                }
-
-                // A dot rather than a word carries the state at a glance; the word
-                // is there for anyone who needs it spelled out.
-                let (dot, word) = if shell.runner.is_paused() {
-                    (skin::WARM, "Paused")
-                } else {
-                    (skin::ACCENT, "Running")
-                };
-                let (r, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
-                ui.painter().circle_filled(r.center(), 3.0, dot);
-                if !compact {
-                    ui.label(egui::RichText::new(word).size(11.0).color(skin::MUTED));
-                }
-
-                    });
                 });
             });
-
-        // While the drawer is out it covers this corner, and the scrim, Escape and the
-        // drawer's own Close button are all available, so the toggle stands down.
-        if compact && !shell.drawer_open {
-            egui::Area::new(egui::Id::new("fathom-controls-toggle"))
-                .order(egui::Order::Foreground)
-                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
-                .show(&ctx, |ui| {
-                    floating_frame().show(ui, |ui| {
-                        if skin::action(ui, "Controls").clicked() {
-                            shell.drawer_open = true;
-                        }
-                    });
-                });
-        }
     }
 
     /// The casing shared by the things that float over the simulation.
