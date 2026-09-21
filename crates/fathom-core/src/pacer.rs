@@ -22,6 +22,9 @@ pub struct Pacer {
     steps: u32,
     cost_ms: f32,
     samples: u32,
+    /// Consecutive samples past the stall clip: two in a row are a real change of
+    /// cost, not a stall.
+    high_streak: u32,
     /// Work per frame the pacer aims for, in milliseconds.
     pub target_ms: f32,
     /// The count is raised only when the next count fits the budget with this
@@ -37,7 +40,7 @@ impl Default for Pacer {
     /// Aims at 10 ms of steps in a 16.7 ms frame: the draw, the panel and the present
     /// need the rest, and a frame that overruns is a frame the display skips.
     fn default() -> Self {
-        Self { steps: 1, cost_ms: 0.0, samples: 0, target_ms: 10.0, slack: 0.15, max_steps: 4096, warmup: 3 }
+        Self { steps: 1, cost_ms: 0.0, samples: 0, high_streak: 0, target_ms: 10.0, slack: 0.15, max_steps: 4096, warmup: 3 }
     }
 }
 
@@ -62,6 +65,7 @@ impl Pacer {
         self.steps = 1;
         self.cost_ms = 0.0;
         self.samples = 0;
+        self.high_streak = 0;
     }
 
     /// A measurement of some batch: it ran `steps` steps in `work_ms`. Call once per
@@ -70,11 +74,17 @@ impl Pacer {
         if steps == 0 || !work_ms.is_finite() || work_ms <= 0.0 {
             return;
         }
-        // A stall is not a slow step: a sample is clipped to a few times the cost
-        // known so far, so it counts as a bad sample, not a catastrophe.
+        // A stall is not a slow step: one sample past a few times the cost known so
+        // far is clipped, so it counts as a bad sample, not a catastrophe. Two in a
+        // row are a real change of cost — a bigger cutoff, a soup that clustered —
+        // and are believed outright, so a step that got sixty times dearer is cut in
+        // one reading, not five.
         let raw = work_ms / steps as f32;
-        let cost = if self.samples == 0 { raw.min(4.0 * self.target_ms) } else { raw.min(4.0 * self.cost_ms) };
-        self.cost_ms = if self.samples == 0 { cost } else { self.cost_ms + (cost - self.cost_ms) * 0.3 };
+        let clip = if self.samples == 0 { 4.0 * self.target_ms } else { 4.0 * self.cost_ms };
+        let high = raw > clip;
+        self.high_streak = if high { self.high_streak + 1 } else { 0 };
+        let cost = if high && self.high_streak < 2 { clip } else { raw };
+        self.cost_ms = if self.samples == 0 || self.high_streak >= 2 { cost } else { self.cost_ms + (cost - self.cost_ms) * 0.3 };
         self.samples += 1;
         if self.samples < self.warmup {
             return;
@@ -170,6 +180,26 @@ mod tests {
         let tail = &counts[100..];
         let changes = tail.windows(2).filter(|w| w[0] != w[1]).count();
         assert!(changes <= 1, "the count changed {changes} times in the tail: {:?}", &tail[..40]);
+    }
+
+    /// A step that suddenly costs sixty times more — the count went from four
+    /// thousand particles to sixty-five thousand — is believed by the second reading
+    /// and the count drops to what fits at once, not by halves over many readings.
+    #[test]
+    fn a_sustained_jump_in_cost_is_believed_by_the_second_reading() {
+        let mut p = Pacer::default();
+        run(&mut p, 100, 2, |_| 0.34);
+        let before = p.steps();
+        assert!(before > 20, "{before}");
+        p.observe(before, before as f32 * 20.0);
+        p.observe(before, before as f32 * 20.0);
+        assert_eq!(p.steps(), 1, "after two readings at 20 ms a step: {}", p.steps());
+        assert!((p.cost_ms() - 20.0).abs() < 1.0, "{}", p.cost_ms());
+        // A reset forgets the cost: the first reading afterwards is taken whole.
+        p.reset();
+        assert_eq!(p.steps(), 1);
+        p.observe(1, 20.0);
+        assert!((p.cost_ms() - 20.0).abs() < 1e-3);
     }
 
     #[test]

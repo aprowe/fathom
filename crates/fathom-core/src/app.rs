@@ -154,6 +154,8 @@ pub struct UpdateCtx<'a> {
     /// What the app measured itself, if it measures: see [`UpdateCtx::report_work`]
     /// and [`UpdateCtx::report_work_pending`].
     pub work_reported: &'a mut Option<WorkReport>,
+    /// Set by [`UpdateCtx::reset_pacer`]: the pacer starts over at one step.
+    pub pacer_reset: &'a mut bool,
     /// Seconds since setup, excluding paused time.
     pub time: f32,
     pub frame: u64,
@@ -177,6 +179,13 @@ impl UpdateCtx<'_> {
     /// as news.
     pub fn report_work(&mut self, steps: u32, ms: f32) {
         *self.work_reported = Some(WorkReport::Measured { steps, ms });
+    }
+
+    /// The work changed size — more particles, say — so what a step used to cost means
+    /// nothing now: the pacer starts over at one step after this frame. Run one step
+    /// this frame too; `steps` was chosen before the change was known.
+    pub fn reset_pacer(&mut self) {
+        *self.pacer_reset = true;
     }
 
     /// The app measures its own work but nothing new has landed this frame: the

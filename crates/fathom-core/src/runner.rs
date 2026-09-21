@@ -244,12 +244,14 @@ impl<A: App> Runner<A> {
             // starts, so the steps alone are what gets measured.
             let mut started = web_time::Instant::now();
             let mut reported = None;
+            let mut pacer_reset = false;
             let mut ctx = UpdateCtx {
                 gpu: &self.gpu,
                 dt: step_dt,
                 steps,
                 work_started: &mut started,
                 work_reported: &mut reported,
+                pacer_reset: &mut pacer_reset,
                 time: self.clock.time,
                 frame: self.clock.frame,
                 params: Params::new(self.schema, &self.block),
@@ -257,7 +259,11 @@ impl<A: App> Runner<A> {
                 camera: &mut self.camera,
             };
             self.app.update(&mut ctx);
-            if !self.paused {
+            if pacer_reset {
+                // The work changed size: any reading still in flight is of the old
+                // work, and the runner's own fence timing below would be too.
+                self.pacer.reset();
+            } else if !self.paused {
                 match reported {
                     Some(WorkReport::Measured { steps, ms }) => self.pacer.observe(steps, ms),
                     // The app measures; its readback has not landed this frame.

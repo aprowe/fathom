@@ -1110,10 +1110,18 @@ pub fn run_native<A: ShellApp>(title: &str) -> eframe::Result {
     let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     setup.device_descriptor = std::sync::Arc::new(|adapter: &wgpu::Adapter| {
         let wanted = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        // Buffers as large as the adapter allows: a particle app's per-particle state
+        // at a hundred thousand particles is well past wgpu's 128 MiB default binding.
+        let have = adapter.limits();
         wgpu::DeviceDescriptor {
             label: Some("fathom device"),
             required_features: adapter.features() & wanted,
-            required_limits: wgpu::Limits { max_texture_dimension_2d: 8192, ..wgpu::Limits::default() },
+            required_limits: wgpu::Limits {
+                max_texture_dimension_2d: 8192,
+                max_storage_buffer_binding_size: have.max_storage_buffer_binding_size,
+                max_buffer_size: have.max_buffer_size,
+                ..wgpu::Limits::default()
+            },
             ..Default::default()
         }
     });
