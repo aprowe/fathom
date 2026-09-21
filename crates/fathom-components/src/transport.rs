@@ -12,13 +12,14 @@ pub enum TransportAction {
     Step,
 }
 
-/// The transport on one row. `compact` drops the state word and keeps the dot.
-pub fn transport(ui: &mut egui::Ui, paused: bool, fps: f32, compact: bool) -> Option<TransportAction> {
+/// The transport on one row. `compact` drops the state word and keeps the dot;
+/// `with_step` adds a single-step button.
+pub fn transport(ui: &mut egui::Ui, paused: bool, fps: f32, compact: bool, with_step: bool) -> Option<TransportAction> {
     let mut action = None;
     if skin::action(ui, if paused { "Run" } else { "Pause" }).on_hover_text("Space").clicked() {
         action = Some(TransportAction::Toggle);
     }
-    if skin::action(ui, "Step").on_hover_text("One update, even while paused.").clicked() {
+    if with_step && skin::action(ui, "Step").on_hover_text("One update, even while paused.").clicked() {
         action = Some(TransportAction::Step);
     }
     ui.add_space(6.0);

@@ -38,6 +38,36 @@ pub fn sparkline(ui: &mut egui::Ui, values: &[f32], size: egui::Vec2, ink: Color
     response
 }
 
+/// Several histories in one box, each scaled to its own range so their shapes can be
+/// compared, latest at the right. `series` is `(values, ink, label)`.
+pub fn sparklines(ui: &mut egui::Ui, series: &[(&[f32], Color32, &str)], size: egui::Vec2) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(3), skin::RAISED.gamma_multiply(0.7));
+    let inner = rect.shrink2(vec2(4.0, 6.0));
+    let mut label_y = inner.top();
+    for (values, ink, label) in series {
+        painter.text(pos2(inner.left() + 2.0, label_y), egui::Align2::LEFT_TOP, *label, FontId::new(9.0, FontFamily::Monospace), *ink);
+        label_y += 11.0;
+        if values.len() < 2 {
+            continue;
+        }
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for &v in values.iter() {
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        let span = (hi - lo).max(1e-6);
+        let points: Vec<egui::Pos2> = values
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| pos2(inner.left() + inner.width() * i as f32 / (values.len() - 1) as f32, inner.bottom() - inner.height() * (v - lo) / span))
+            .collect();
+        painter.add(egui::Shape::line(points, Stroke::new(1.3, *ink)));
+    }
+    response
+}
+
 /// A shaded band along the x axis of a curve, and a vertical marker on it.
 pub struct XBand {
     pub from: f32,

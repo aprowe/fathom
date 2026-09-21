@@ -120,6 +120,20 @@ pub fn strip(ui: &mut egui::Ui, def: &ParamDef, index: usize, block: &mut ParamB
     out
 }
 
+/// A strip with no padlock: for the dials that set up the view or the run rather than
+/// the experiment — always kept out of Randomize, so a lock would say nothing.
+pub fn bare(ui: &mut egui::Ui, def: &ParamDef, index: usize, block: &mut ParamBlock) -> StripResponse {
+    let mut out = StripResponse::default();
+    let response = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            out.changed = body(ui, def, index, block, None, false);
+        })
+        .response;
+    param::finish_row(ui, response, def, index, block, false);
+    out
+}
+
 /// A strip with a source chip and, when the source is not fixed, a band over the track.
 /// `sourced` is edited in place. Only a float dial can carry a band; for any other kind
 /// the chip alone is drawn.
@@ -142,8 +156,16 @@ pub fn sourced_strip(
             if chip(ui, def.name, sourced, disabled_hint) {
                 out.source_changed = true;
             }
+            // The band is kept honest against the dial before it is drawn: a band that
+            // was never set opens around the value rather than sitting at the left edge.
+            if def.kind == ParamKind::Float && sourced.source != Source::Fixed {
+                sourced.band = sourced.band.clamped(block.f32(index), def.min, def.max);
+            }
             let band = (def.kind == ParamKind::Float && sourced.source != Source::Fixed).then_some((sourced.source.colour(), &mut sourced.band, &mut out.band_changed));
             out.changed = body(ui, def, index, block, band, locked);
+            if sourced.source != Source::Fixed {
+                sourced.band = sourced.band.clamped(block.f32(index), def.min, def.max);
+            }
         })
         .response;
     param::finish_row(ui, response, def, index, block, locked);
@@ -247,7 +269,7 @@ fn track(ui: &mut egui::Ui, def: &ParamDef, value: &mut f32, step: f32, mut band
         grab = 0;
         if let (Some(p), Some((_, b, _))) = (response.interact_pointer_pos(), band.as_ref()) {
             let (dl, dh) = ((p.x - to_x(b.lo)).abs(), (p.x - to_x(b.hi)).abs());
-            grab = if dl < 7.0 && dl <= dh { 1 } else if dh < 7.0 { 2 } else { 0 };
+            grab = if dl < 9.0 && dl <= dh { 1 } else if dh < 9.0 { 2 } else { 0 };
         }
         ui.data_mut(|d| d.insert_temp(grab_id, grab));
     }
@@ -284,6 +306,13 @@ fn track(ui: &mut egui::Ui, def: &ParamDef, value: &mut f32, step: f32, mut band
     if lit {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
+    if let Some((_, b, _)) = band.as_ref() {
+        response.clone().on_hover_text(format!(
+            "band {} … {}: drag a bracket to move that end, the rail to move the value",
+            control::format(b.lo, def.min, def.max, step),
+            control::format(b.hi, def.min, def.max, step)
+        ));
+    }
 
     let painter = ui.painter();
     let cy = rect.center().y;
@@ -295,8 +324,8 @@ fn track(ui: &mut egui::Ui, def: &ParamDef, value: &mut f32, step: f32, mut band
         Some((ink, b, _)) => {
             let (xl, xh) = (to_x(b.lo), to_x(b.hi));
             painter.rect_filled(Rect::from_min_max(pos2(xl, cy - 2.0), pos2(xh, cy + 2.0)), CornerRadius::same(1), ink.gamma_multiply(0.35));
-            painter.vline(xl, cy - 6.0..=cy + 6.0, Stroke::new(2.0, *ink));
-            painter.vline(xh, cy - 6.0..=cy + 6.0, Stroke::new(2.0, *ink));
+            painter.rect_filled(Rect::from_center_size(pos2(xl, cy), vec2(4.0, 14.0)), CornerRadius::same(1), *ink);
+            painter.rect_filled(Rect::from_center_size(pos2(xh, cy), vec2(4.0, 14.0)), CornerRadius::same(1), *ink);
             painter.hline(xl..=xh, cy + 6.0, Stroke::new(1.0, *ink));
             (1.0, skin::TEXT.gamma_multiply(0.7))
         }
@@ -355,11 +384,16 @@ fn chip(ui: &mut egui::Ui, key: &str, sourced: &mut Sourced, disabled_hint: &str
     let mut next = sourced.source.next();
     let skipped = if Some(next) == sourced.disabled {
         next = next.next();
-        format!(" {} is not available: {disabled_hint}", sourced.source.next().letter())
+        format!(" ({} = Landscape, a field over the colour pair, is not available yet: {disabled_hint}.)", sourced.source.next().letter())
     } else {
         String::new()
     };
-    let response = response.on_hover_text(format!("{now} Click for {}.{skipped}", next.letter()));
+    let word = match next {
+        Source::Fixed => "Fixed",
+        Source::Landscape => "Landscape",
+        Source::Trait => "Trait",
+    };
+    let response = response.on_hover_text(format!("{now} Click for {word}.{skipped}"));
     let mut changed = false;
     if response.clicked() {
         let mut next = sourced.source.next();
