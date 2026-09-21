@@ -145,7 +145,7 @@ pub fn group_header(ui: &mut Ui, text: &str, default_open: bool) -> bool {
     let id = ui.make_persistent_id(("fathom-group", text));
     let mut open = ui.data_mut(|d| *d.get_persisted_mut_or(id, default_open));
 
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
     if response.clicked() {
         open = !open;
         ui.data_mut(|d| d.insert_persisted(id, open));
@@ -153,7 +153,7 @@ pub fn group_header(ui: &mut Ui, text: &str, default_open: bool) -> bool {
 
     let turn = ui.ctx().animate_bool_responsive(id, open);
     let ink = if response.hovered() { TEXT } else { MUTED };
-    let font = FontId::new(12.0, semibold());
+    let font = FontId::new(11.0, semibold());
     let painter = ui.painter();
 
     // The chevron rotates a quarter turn rather than swapping glyph, so the fold reads as
@@ -438,8 +438,9 @@ pub fn segment_widths(ui: &Ui, options: &[&str]) -> Vec<f32> {
 /// A small padlock, lit when locked. Drawn rather than typed because the bundled fonts
 /// have no glyph for it that matches the rest of the panel.
 pub fn padlock(ui: &mut Ui, key: &str, locked: bool) -> Response {
+    let height = ui.available_height().clamp(16.0, ROW);
     let (rect, response) =
-        ui.allocate_exact_size(vec2(14.0, ROW), Sense::click());
+        ui.allocate_exact_size(vec2(14.0, height), Sense::click());
     let response = response.on_hover_text(if locked {
         "Locked: Randomize leaves this alone. Click to unlock."
     } else {
