@@ -14,7 +14,7 @@
 //! `impl ShellApp for MyApp {}` and is done.
 
 use eframe::egui;
-use fathom_core::{App, Camera, Gpu, ParamBlock, ParamDef, Params, RunnerParts, Viewport};
+use fathom_core::{App, Camera, FrameStats, Gpu, ParamBlock, ParamDef, Params, RunnerParts, Viewport};
 use serde_json::Value;
 
 use crate::presets::Preset;
@@ -81,6 +81,8 @@ pub struct ShellCtx<'a> {
     pub viewport_rect: egui::Rect,
     /// Frames per second as the runner measures them.
     pub fps: f32,
+    /// The whole frame picture: steps per frame and the work they take, besides fps.
+    pub stats: FrameStats,
     pub shell: &'a mut Controls,
 }
 
@@ -237,7 +239,7 @@ pub(crate) fn with_ctx<A: App, R>(
     parts: RunnerParts<'_, A>,
     egui: &egui::Context,
     viewport_rect: egui::Rect,
-    fps: f32,
+    stats: FrameStats,
     controls: &mut Controls,
     f: impl FnOnce(&mut A, &mut ShellCtx<'_>) -> R,
 ) -> R {
@@ -250,7 +252,8 @@ pub(crate) fn with_ctx<A: App, R>(
         paused: parts.paused,
         egui,
         viewport_rect,
-        fps,
+        fps: stats.fps,
+        stats,
         shell: controls,
     };
     f(parts.app, &mut ctx)

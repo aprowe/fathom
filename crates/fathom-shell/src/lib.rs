@@ -246,8 +246,8 @@ impl<A: ShellApp> Shell<A> {
         self.controls.drawer_open = self.drawer_open;
         self.controls.status = self.status.clone();
         self.controls.preset_name = self.preset_name.clone();
-        let fps = self.runner.stats().fps;
-        let result = hooks::with_ctx(self.runner.parts(), egui, self.viewport_rect, fps, &mut self.controls, f);
+        let stats = self.runner.stats();
+        let result = hooks::with_ctx(self.runner.parts(), egui, self.viewport_rect, stats, &mut self.controls, f);
         self.preset_name = self.controls.preset_name.clone();
         self.apply_requests();
         result
@@ -435,8 +435,9 @@ impl<A: ShellApp> eframe::App for Shell<A> {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // A simulation is never idle, so the shell drives repaints rather than waiting
-        // for input the way an ordinary egui app would.
-        ui.ctx().request_repaint();
+        // for input the way an ordinary egui app would — but no faster than 60 a
+        // second: the pacer fills each frame with steps, so more frames buy nothing.
+        let frame_started = web_time::Instant::now();
 
         let egui = ui.ctx().clone();
         self.hook(&egui, |app, ctx| app.frame(&egui, frame, ctx));
@@ -483,6 +484,9 @@ impl<A: ShellApp> eframe::App for Shell<A> {
                 // Drawn after the image so it sits on top.
                 self.draw_overlay(ui, rect);
             });
+
+        let period = std::time::Duration::from_micros(16_667);
+        ui.ctx().request_repaint_after(period.saturating_sub(frame_started.elapsed()));
     }
 }
 

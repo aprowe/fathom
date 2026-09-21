@@ -9,6 +9,10 @@ pub struct FrameStats {
     pub frame: u64,
     pub fps: f32,
     pub frame_ms: f32,
+    /// Simulation steps the last frame ran, as the pacer set them.
+    pub steps: u32,
+    /// Smoothed milliseconds a frame's simulation work takes.
+    pub work_ms: f32,
     /// Seconds since setup, excluding time spent paused.
     pub time: f32,
 }
@@ -60,7 +64,7 @@ impl Clock {
     }
 
     pub fn stats(&self) -> FrameStats {
-        FrameStats { frame: self.frame, fps: self.fps, frame_ms: self.frame_ms, time: self.time }
+        FrameStats { frame: self.frame, fps: self.fps, frame_ms: self.frame_ms, steps: 1, work_ms: 0.0, time: self.time }
     }
 }
 

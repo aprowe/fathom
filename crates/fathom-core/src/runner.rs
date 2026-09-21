@@ -11,6 +11,7 @@ use crate::camera::Camera;
 use crate::clock::{Clock, FrameStats};
 use crate::event::{InputEvent, MouseEvent};
 use crate::gpu::Gpu;
+use crate::pacer::Pacer;
 use crate::params::{ParamBlock, ParamDef, Params};
 use crate::viewport::Viewport;
 
@@ -37,6 +38,7 @@ pub struct Runner<A: App> {
     block: ParamBlock,
     camera: Camera,
     clock: Clock,
+    pacer: Pacer,
     viewport: Viewport,
     paused: bool,
     /// Set by `fathom.step`: run exactly one update while paused.
@@ -68,6 +70,7 @@ impl<A: App> Runner<A> {
             block,
             camera: Camera::default(),
             clock: Clock::default(),
+            pacer: Pacer::default(),
             viewport,
             paused: false,
             step_once: false,
@@ -103,7 +106,13 @@ impl<A: App> Runner<A> {
     }
 
     pub fn stats(&self) -> FrameStats {
-        self.clock.stats()
+        FrameStats { steps: self.pacer.steps(), work_ms: self.pacer.work_ms(), ..self.clock.stats() }
+    }
+
+    /// The step pacer, to retune or reset — after a reseed, say, when the old count
+    /// means nothing.
+    pub fn pacer_mut(&mut self) -> &mut Pacer {
+        &mut self.pacer
     }
 
     pub fn is_paused(&self) -> bool {
@@ -228,10 +237,13 @@ impl<A: App> Runner<A> {
             // A single step while paused should advance by a plausible frame, not by
             // however long the user sat on the pause button.
             let step_dt = if self.paused { 1.0 / 60.0 } else { dt };
+            let steps = if self.paused { 1 } else { self.pacer.steps() };
             self.step_once = false;
+            let started = now();
             let mut ctx = UpdateCtx {
                 gpu: &self.gpu,
                 dt: step_dt,
+                steps,
                 time: self.clock.time,
                 frame: self.clock.frame,
                 params: Params::new(self.schema, &self.block),
@@ -239,6 +251,14 @@ impl<A: App> Runner<A> {
                 camera: &mut self.camera,
             };
             self.app.update(&mut ctx);
+            // The work is on the GPU; its cost is only known once it is done. Waiting
+            // here costs the overlap of one frame's update with its draw, which is
+            // nothing next to knowing how many steps the next frame can take.
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+            if !self.paused {
+                self.pacer.observe(elapsed_ms(started));
+            }
         }
 
         let mut encoder = self
@@ -283,6 +303,24 @@ impl<A: App> Runner<A> {
             _ => {}
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now() -> std::time::Instant {
+    std::time::Instant::now()
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn elapsed_ms(since: std::time::Instant) -> f32 {
+    since.elapsed().as_secs_f32() * 1000.0
+}
+// The browser cannot wait on the GPU, and `Instant` panics there: the pacer sees no
+// work time on the web and holds at one step, which is the frame-locked behaviour
+// the web build had before.
+#[cfg(target_arch = "wasm32")]
+fn now() {}
+#[cfg(target_arch = "wasm32")]
+fn elapsed_ms(_since: ()) -> f32 {
+    f32::NAN
 }
 
 /// A no-op mouse event, useful when synthesising input in tests.

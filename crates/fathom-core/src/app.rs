@@ -142,6 +142,10 @@ pub struct UpdateCtx<'a> {
     pub gpu: &'a Gpu,
     /// Seconds since the last frame, clamped so a stall cannot blow up an integrator.
     pub dt: f32,
+    /// How many simulation steps to run this frame: what the pacer found fits in the
+    /// frame's budget. One while paused and stepping. An app that steps a fixed
+    /// timestep runs this many; an app that integrates `dt` may ignore it.
+    pub steps: u32,
     /// Seconds since setup, excluding paused time.
     pub time: f32,
     pub frame: u64,

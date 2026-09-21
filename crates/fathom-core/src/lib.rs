@@ -17,6 +17,7 @@ pub mod camera;
 pub mod clock;
 pub mod event;
 pub mod gpu;
+pub mod pacer;
 pub mod params;
 pub mod runner;
 pub mod viewport;
@@ -27,6 +28,7 @@ pub use app::{
 pub use camera::{Camera, CameraUniform};
 pub use clock::FrameStats;
 pub use event::{InputEvent, KeyEvent, Modifiers, MouseEvent, ScrollEvent};
+pub use pacer::Pacer;
 pub use gpu::Gpu;
 pub use params::{ParamBlock, ParamDef, ParamKind, Params};
 pub use runner::{Runner, RunnerParts};
