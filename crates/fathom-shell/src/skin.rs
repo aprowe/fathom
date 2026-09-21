@@ -441,9 +441,9 @@ pub fn padlock(ui: &mut Ui, key: &str, locked: bool) -> Response {
     let (rect, response) =
         ui.allocate_exact_size(vec2(14.0, ROW), Sense::click());
     let response = response.on_hover_text(if locked {
-        "Locked: Randomize and presets leave this alone. Click to unlock."
+        "Locked: Randomize leaves this alone. Click to unlock."
     } else {
-        "Click to lock this value in, against Randomize and presets."
+        "Click to lock this value in against Randomize."
     });
     let _ = key;
     let ink = if locked {

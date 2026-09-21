@@ -377,21 +377,11 @@ impl<A: ShellApp> Shell<A> {
             .filter(|doc| doc.is_for(descriptor.name));
         match preset {
             Some(doc) => {
-                // A locked control keeps its value through a preset, as through Randomize.
-                let schema = self.runner.schema();
-                let held: Vec<(usize, u32)> = schema
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, def)| panel::is_locked_in(&egui, def))
-                    .map(|(i, _)| (i, self.runner.params().u32(i)))
-                    .collect();
-                let n = doc.apply(schema, self.runner.params_mut());
-                for &(i, word) in &held {
-                    self.runner.params_mut().set_u32(i, word);
-                }
+                // A preset is a complete picture, so it lands whole: locks only guard
+                // against Randomize.
+                let n = doc.apply(self.runner.schema(), self.runner.params_mut());
                 self.hook(&egui, |app, ctx| app.load_state(&doc.state, ctx));
-                let kept = if held.is_empty() { String::new() } else { format!(", {} locked", held.len()) };
-                self.status = format!("loaded {name}: {n} of {} parameters{kept}", descriptor.params.len());
+                self.status = format!("loaded {name}: {n} of {} parameters", descriptor.params.len());
             }
             None => {
                 self.hook(&egui, |app, ctx| app.file_received(name, bytes, ctx));
@@ -767,7 +757,7 @@ mod panel {
             // constantly, so they are on every tab.
             ui.horizontal_wrapped(|ui| {
                 if skin::action(ui, "Randomize")
-                    .on_hover_text("Roll every unlocked parameter. Click a padlock to keep one where it is, through Randomize and presets alike.")
+                    .on_hover_text("Roll every unlocked parameter. Click a padlock to keep one where it is.")
                     .clicked()
                 {
                     shell.randomize(ui);
@@ -1032,7 +1022,7 @@ mod panel {
             if !def.description.is_empty() {
                 ui.label(egui::RichText::new(def.description).size(12.0).color(skin::TEXT));
             }
-            let held = if locked { " · locked: kept through Randomize and presets" } else { "" };
+            let held = if locked { " · locked: kept through Randomize" } else { "" };
             ui.label(
                 egui::RichText::new(format!("default {default} · right-click to reset{held}"))
                     .size(11.0)
