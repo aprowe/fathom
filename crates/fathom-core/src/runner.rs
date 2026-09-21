@@ -239,11 +239,17 @@ impl<A: App> Runner<A> {
             let step_dt = if self.paused { 1.0 / 60.0 } else { dt };
             let steps = if self.paused { 1 } else { self.pacer.steps() };
             self.step_once = false;
-            let started = now();
+            // Whatever the GPU still has from last frame — its draw, the panel, a
+            // readback — is not this frame's work: let it finish before the clock
+            // starts, so the steps alone are what gets measured.
+            let mut started = web_time::Instant::now();
+            let mut reported = None;
             let mut ctx = UpdateCtx {
                 gpu: &self.gpu,
                 dt: step_dt,
                 steps,
+                work_started: &mut started,
+                work_reported: &mut reported,
                 time: self.clock.time,
                 frame: self.clock.frame,
                 params: Params::new(self.schema, &self.block),
@@ -251,13 +257,21 @@ impl<A: App> Runner<A> {
                 camera: &mut self.camera,
             };
             self.app.update(&mut ctx);
-            // The work is on the GPU; its cost is only known once it is done. Waiting
-            // here costs the overlap of one frame's update with its draw, which is
-            // nothing next to knowing how many steps the next frame can take.
-            #[cfg(not(target_arch = "wasm32"))]
-            let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
             if !self.paused {
-                self.pacer.observe(elapsed_ms(started));
+                match reported {
+                    Some(ms) => self.pacer.observe(ms),
+                    // No measurement from the app: wait for the work and time that. Under
+                    // vsync this reads as the frame period, so the pacer then holds at
+                    // about a frame's worth of steps — safe, if not the whole budget.
+                    // The browser cannot wait at all, and holds at one step.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    None => {
+                        let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+                        self.pacer.observe(started.elapsed().as_secs_f32() * 1000.0);
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    None => {}
+                }
             }
         }
 
@@ -303,24 +317,6 @@ impl<A: App> Runner<A> {
             _ => {}
         }
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn now() -> std::time::Instant {
-    std::time::Instant::now()
-}
-#[cfg(not(target_arch = "wasm32"))]
-fn elapsed_ms(since: std::time::Instant) -> f32 {
-    since.elapsed().as_secs_f32() * 1000.0
-}
-// The browser cannot wait on the GPU, and `Instant` panics there: the pacer sees no
-// work time on the web and holds at one step, which is the frame-locked behaviour
-// the web build had before.
-#[cfg(target_arch = "wasm32")]
-fn now() {}
-#[cfg(target_arch = "wasm32")]
-fn elapsed_ms(_since: ()) -> f32 {
-    f32::NAN
 }
 
 /// A no-op mouse event, useful when synthesising input in tests.

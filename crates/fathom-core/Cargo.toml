@@ -9,6 +9,7 @@ description = "Core traits and runtime for fathom GPU simulation apps."
 include_dir = "0.7"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 log = "0.4.34"
+web-time = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 wgpu = "30.0.1"

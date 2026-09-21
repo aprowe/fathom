@@ -1104,12 +1104,29 @@ mod panel {
 /// Run an app in a native window.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_native<A: ShellApp>(title: &str) -> eframe::Result {
+    // The device is asked for timestamp queries when the adapter has them: an app that
+    // times its own GPU work with them can pace itself on that rather than on a fence,
+    // which under vsync measures the frame, not the work.
+    let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    setup.device_descriptor = std::sync::Arc::new(|adapter: &wgpu::Adapter| {
+        let wanted = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        wgpu::DeviceDescriptor {
+            label: Some("fathom device"),
+            required_features: adapter.features() & wanted,
+            required_limits: wgpu::Limits { max_texture_dimension_2d: 8192, ..wgpu::Limits::default() },
+            ..Default::default()
+        }
+    });
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([720.0, 480.0])
             .with_title(title),
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(setup),
+            ..Default::default()
+        },
         ..Default::default()
     };
 

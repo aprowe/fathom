@@ -146,12 +146,36 @@ pub struct UpdateCtx<'a> {
     /// frame's budget. One while paused and stepping. An app that steps a fixed
     /// timestep runs this many; an app that integrates `dt` may ignore it.
     pub steps: u32,
+    /// When the frame's simulation work began, for the pacer. Starts with `update`;
+    /// an app that does other GPU work first — a readback for a selection, say —
+    /// calls [`UpdateCtx::start_work`] just before it submits its steps, so only the
+    /// steps are measured.
+    pub work_started: &'a mut web_time::Instant,
+    /// The work time the app measured itself, if it did: see
+    /// [`UpdateCtx::report_work_ms`].
+    pub work_reported: &'a mut Option<f32>,
     /// Seconds since setup, excluding paused time.
     pub time: f32,
     pub frame: u64,
     pub params: Params<'a>,
     pub viewport: Viewport,
     pub camera: &'a mut Camera,
+}
+
+impl UpdateCtx<'_> {
+    /// Mark the start of this frame's simulation work: call it right before submitting
+    /// the steps, after any other GPU work `update` does.
+    pub fn start_work(&mut self) {
+        *self.work_started = web_time::Instant::now();
+    }
+
+    /// Hand the pacer a work time the app measured on the GPU — timestamp queries
+    /// around its steps, read back a frame later. Preferred over the runner's own
+    /// fence timing, which under vsync measures the frame period rather than the work;
+    /// when this is called the runner does not wait on the device at all.
+    pub fn report_work_ms(&mut self, ms: f32) {
+        *self.work_reported = Some(ms);
+    }
 }
 
 /// Handed to [`App::draw`]. Record into `encoder`; the host handles present.
