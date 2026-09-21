@@ -26,6 +26,12 @@ pub trait ShellApp: App {
     /// `Ui` inside the panel's scroll area: any widget goes.
     fn panel(&mut self, _ui: &mut egui::Ui, _ctx: &mut ShellCtx<'_>) {}
 
+    /// Lay the window out, when the descriptor asks for `custom_chrome`: called before
+    /// the canvas with the root `Ui`, so the app adds its own `egui::Panel`s around it
+    /// and the canvas takes what is left. The shell draws nothing else. The pieces the
+    /// default panel is made of are in `fathom_components`.
+    fn chrome(&mut self, _ui: &mut egui::Ui, _ctx: &mut ShellCtx<'_>) {}
+
     /// Draw over the simulation. `ui` covers exactly the viewport, so
     /// `ui.min_rect()` is the viewport in points and [`ShellCtx::to_screen`] maps a
     /// world position onto it. Labels, HUD text, gizmos, debug readouts.
@@ -73,6 +79,8 @@ pub struct ShellCtx<'a> {
     pub egui: &'a egui::Context,
     /// The viewport's rectangle on screen, in points. Zero-sized before the first frame.
     pub viewport_rect: egui::Rect,
+    /// Frames per second as the runner measures them.
+    pub fps: f32,
     pub shell: &'a mut Controls,
 }
 
@@ -115,6 +123,10 @@ pub struct Controls {
     pub(crate) presets: Vec<Preset>,
     pub(crate) panel_width: f32,
     pub(crate) drawer_open: bool,
+    pub(crate) status: String,
+    /// The name of the preset last loaded or saved, and the text a Save… field edits.
+    /// Public so a custom chrome can hand it to the preset picker.
+    pub preset_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +143,7 @@ pub(crate) enum Request {
     Command(String, Value),
     Status(String),
     SaveFile(String, Vec<u8>),
+    Randomize,
 }
 
 impl Controls {
@@ -207,6 +220,16 @@ impl Controls {
     pub fn status(&mut self, text: impl Into<String>) {
         self.requests.push(Request::Status(text.into()));
     }
+
+    /// The last thing the shell reported: a file loaded, a preset saved, a parse error.
+    pub fn status_text(&self) -> &str {
+        &self.status
+    }
+
+    /// Roll every unlocked parameter, as the panel's Randomize button does.
+    pub fn randomize(&mut self) {
+        self.requests.push(Request::Randomize);
+    }
 }
 
 /// Build a context over the runner's parts and run `f` with the app and it.
@@ -214,6 +237,7 @@ pub(crate) fn with_ctx<A: App, R>(
     parts: RunnerParts<'_, A>,
     egui: &egui::Context,
     viewport_rect: egui::Rect,
+    fps: f32,
     controls: &mut Controls,
     f: impl FnOnce(&mut A, &mut ShellCtx<'_>) -> R,
 ) -> R {
@@ -226,6 +250,7 @@ pub(crate) fn with_ctx<A: App, R>(
         paused: parts.paused,
         egui,
         viewport_rect,
+        fps,
         shell: controls,
     };
     f(parts.app, &mut ctx)

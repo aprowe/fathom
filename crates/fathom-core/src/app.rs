@@ -88,11 +88,21 @@ pub struct AppDescriptor {
     /// Whether the shell draws its own Presets section. An app that wants a different
     /// arrangement turns this off and draws one from the same pieces in its panel hook.
     pub presets_section: bool,
+    /// Whether the app draws all of its own chrome: the shell then draws no panel, title
+    /// bar or drawer, and calls the app's `chrome` hook to lay the window out around the
+    /// canvas.
+    pub custom_chrome: bool,
 }
 
 impl AppDescriptor {
     pub const fn new(name: &'static str, params: &'static [ParamDef], commands: &'static [CommandDef]) -> Self {
-        Self { name, params, commands, presets: None, presets_section: true }
+        Self { name, params, commands, presets: None, presets_section: true, custom_chrome: false }
+    }
+
+    /// The app lays out the window itself; see `custom_chrome`.
+    pub const fn custom_chrome(mut self) -> Self {
+        self.custom_chrome = true;
+        self
     }
 
     /// Ship these presets inside the binary.

@@ -7,7 +7,11 @@
 //! an app that wants its own chrome lays them out itself.
 
 pub mod control;
+pub mod instruments;
 pub mod param;
+pub mod presets;
 pub mod skin;
+pub mod strip;
+pub mod transport;
 
 pub use eframe::egui;

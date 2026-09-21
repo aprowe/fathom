@@ -169,10 +169,10 @@ impl<A: ShellApp> Shell<A> {
     }
 
     /// Roll every unlocked parameter to a value somewhere in its range.
-    fn randomize(&mut self, ui: &egui::Ui) {
+    fn randomize(&mut self, ctx: &egui::Context) {
         let schema = self.runner.schema();
         for (index, def) in schema.iter().enumerate() {
-            if panel::is_locked_in(ui.ctx(), def) {
+            if panel::is_locked_in(ctx, def) {
                 continue;
             }
             let u = self.random_unit();
@@ -244,7 +244,11 @@ impl<A: ShellApp> Shell<A> {
         self.list_presets();
         self.controls.panel_width = self.panel_width;
         self.controls.drawer_open = self.drawer_open;
-        let result = hooks::with_ctx(self.runner.parts(), egui, self.viewport_rect, &mut self.controls, f);
+        self.controls.status = self.status.clone();
+        self.controls.preset_name = self.preset_name.clone();
+        let fps = self.runner.stats().fps;
+        let result = hooks::with_ctx(self.runner.parts(), egui, self.viewport_rect, fps, &mut self.controls, f);
+        self.preset_name = self.controls.preset_name.clone();
         self.apply_requests();
         result
     }
@@ -264,6 +268,10 @@ impl<A: ShellApp> Shell<A> {
                 Request::DeletePreset(name) => self.delete_preset(&name),
                 Request::Command(name, value) => self.dispatch(&name, value),
                 Request::Status(text) => self.status = text,
+                Request::Randomize => {
+                    let egui = self.egui.clone();
+                    self.randomize(&egui);
+                }
                 Request::SaveFile(name, bytes) => {
                     let ext: &'static [&'static str] = if name.ends_with(".json") { &["json"] } else { &[] };
                     self.dialogs.save(None, name, ext, bytes);
@@ -434,8 +442,14 @@ impl<A: ShellApp> eframe::App for Shell<A> {
         self.hook(&egui, |app, ctx| app.frame(&egui, frame, ctx));
         self.receive_files(&egui);
 
-        panel::draw(self, ui);
-        panel::title_bar(self, ui);
+        if Runner::<A>::descriptor().custom_chrome {
+            // The app lays the window out itself, from the components; the canvas
+            // takes whatever it leaves.
+            self.hook(&egui, |app, ctx| app.chrome(ui, ctx));
+        } else {
+            panel::draw(self, ui);
+            panel::title_bar(self, ui);
+        }
 
         let ppp = ui.ctx().pixels_per_point();
         egui::CentralPanel::no_frame()
@@ -762,7 +776,7 @@ mod panel {
                     .on_hover_text("Roll every unlocked parameter. Click a padlock to keep one where it is.")
                     .clicked()
                 {
-                    shell.randomize(ui);
+                    shell.randomize(ui.ctx());
                 }
                 for def in descriptor.commands.iter().filter(|c| c.pinned && c.options.is_empty()) {
                     if command_button(ui, def).clicked() {
