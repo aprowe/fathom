@@ -2,35 +2,42 @@
 //!
 //! The interface wants a steady frame rate; the simulation wants every step it can
 //! get. The pacer sits between them: each frame the app is told how many steps to run,
-//! and afterwards the pacer is told how long the frame's work took. Under budget it asks
-//! for more steps next time, over budget it cuts back in proportion, and within a dead
-//! band around the target it holds still, so the count settles rather than hunting.
+//! and when a measurement of some earlier batch comes back — how many steps it ran and
+//! how long they took on the GPU — the pacer is told. Measurements arrive late (a
+//! readback lands a few frames after its batch) and not every frame, so the pacer does
+//! not regulate on "was the last frame over budget"; it keeps a smoothed **cost per
+//! step**, which is the same whichever batch it was measured on, and sets the count to
+//! what the budget buys at that cost.
 //!
-//! Work time is smoothed with an exponential moving average, so one slow frame — a
-//! shader compile, a readback — does not throw the count around. Nothing is regulated
-//! for the first few frames: the average has to mean something first.
+//! The count changes only when a fresh measurement lands. It is cut when the current
+//! count no longer fits the budget, and raised only when the next count would fit with
+//! some slack to spare — a hysteresis, so a cost drifting across a quantisation edge
+//! does not flip the count (and with it the simulation's speed) back and forth. A rise
+//! is never more than half again at once; a cut is immediate, since an over-budget
+//! frame is a dropped frame.
 
 /// Step budgeting for one frame at a time.
 #[derive(Clone, Debug)]
 pub struct Pacer {
     steps: u32,
-    work_ms: f32,
-    frames: u32,
+    cost_ms: f32,
+    samples: u32,
     /// Work per frame the pacer aims for, in milliseconds.
     pub target_ms: f32,
-    /// Half-width of the band around the target inside which nothing changes.
-    pub dead_ms: f32,
+    /// The count is raised only when the next count fits the budget with this
+    /// fraction to spare.
+    pub slack: f32,
     /// The most steps a frame is ever asked for.
     pub max_steps: u32,
-    /// Frames observed before regulation starts.
+    /// Measurements observed before regulation starts: the cost has to mean something.
     pub warmup: u32,
 }
 
 impl Default for Pacer {
-    /// Aims a little under 60 fps worth of work — 12 ms of the frame's 16.7 — so the
-    /// panel and the present have room of their own.
+    /// Aims at 10 ms of steps in a 16.7 ms frame: the draw, the panel and the present
+    /// need the rest, and a frame that overruns is a frame the display skips.
     fn default() -> Self {
-        Self { steps: 1, work_ms: 0.0, frames: 0, target_ms: 12.0, dead_ms: 1.5, max_steps: 4096, warmup: 20 }
+        Self { steps: 1, cost_ms: 0.0, samples: 0, target_ms: 10.0, slack: 0.15, max_steps: 4096, warmup: 3 }
     }
 }
 
@@ -40,37 +47,44 @@ impl Pacer {
         self.steps
     }
 
-    /// Smoothed work time per frame, in milliseconds.
+    /// Smoothed cost of one step, in milliseconds.
+    pub fn cost_ms(&self) -> f32 {
+        self.cost_ms
+    }
+
+    /// What the current count is expected to take, in milliseconds.
     pub fn work_ms(&self) -> f32 {
-        self.work_ms
+        self.steps as f32 * self.cost_ms
     }
 
     /// Start over at one step: the scene changed size, or the app asked.
     pub fn reset(&mut self) {
         self.steps = 1;
-        self.work_ms = 0.0;
-        self.frames = 0;
+        self.cost_ms = 0.0;
+        self.samples = 0;
     }
 
-    /// Report how long this frame's work took and settle on next frame's count.
-    pub fn observe(&mut self, work_ms: f32) {
-        if !work_ms.is_finite() || work_ms < 0.0 {
+    /// A measurement of some batch: it ran `steps` steps in `work_ms`. Call once per
+    /// measurement, never with a repeated one: each call is treated as news.
+    pub fn observe(&mut self, steps: u32, work_ms: f32) {
+        if steps == 0 || !work_ms.is_finite() || work_ms <= 0.0 {
             return;
         }
-        // A stall is not a slow frame: it counts as a bad one, not as a catastrophe.
-        let work_ms = work_ms.min(4.0 * self.target_ms);
-        self.work_ms = if self.frames == 0 { work_ms } else { self.work_ms + (work_ms - self.work_ms) * 0.15 };
-        self.frames += 1;
-        if self.frames <= self.warmup {
+        // A stall is not a slow step: a sample is clipped to a few times the cost
+        // known so far, so it counts as a bad sample, not a catastrophe.
+        let raw = work_ms / steps as f32;
+        let cost = if self.samples == 0 { raw.min(4.0 * self.target_ms) } else { raw.min(4.0 * self.cost_ms) };
+        self.cost_ms = if self.samples == 0 { cost } else { self.cost_ms + (cost - self.cost_ms) * 0.3 };
+        self.samples += 1;
+        if self.samples < self.warmup {
             return;
         }
-        let work = self.work_ms.max(0.05);
-        if work < self.target_ms - self.dead_ms {
-            // Under: ramp up by five percent, and by at least one.
-            self.steps = (self.steps + (self.steps / 20).max(1)).min(self.max_steps);
-        } else if work > self.target_ms + self.dead_ms {
-            // Over: pull back in proportion, but never to nothing.
-            self.steps = ((self.steps as f32 * self.target_ms / work) as u32).max(1);
+        let cost = self.cost_ms.max(1e-3);
+        let wanted = ((self.target_ms / cost) as u32).clamp(1, self.max_steps);
+        if self.steps as f32 * cost > self.target_ms {
+            self.steps = wanted;
+        } else if (self.steps + 1) as f32 * cost * (1.0 + self.slack) <= self.target_ms {
+            self.steps = wanted.min(self.steps + (self.steps / 2).max(1)).max(self.steps);
         }
     }
 }
@@ -79,82 +93,107 @@ impl Pacer {
 mod tests {
     use super::*;
 
-    fn warmed(pacer: &mut Pacer, work_ms: f32) {
-        for _ in 0..pacer.warmup {
-            pacer.observe(work_ms);
+    /// A frame loop with a GPU whose readback lands `latency` frames after the batch:
+    /// each frame runs the pacer's count, and the measurement of the batch from
+    /// `latency` frames ago arrives, if that frame's batch exists. `cost` is the true
+    /// milliseconds per step. Returns the count run each frame.
+    fn run(pacer: &mut Pacer, frames: usize, latency: usize, cost: impl Fn(usize) -> f32) -> Vec<u32> {
+        let mut history: Vec<(u32, f32)> = Vec::new();
+        let mut counts = Vec::new();
+        for f in 0..frames {
+            let steps = pacer.steps();
+            counts.push(steps);
+            history.push((steps, steps as f32 * cost(f)));
+            if f >= latency {
+                let (s, ms) = history[f - latency];
+                pacer.observe(s, ms);
+            }
         }
+        counts
     }
 
     #[test]
     fn starts_at_one_step_and_holds_through_warmup() {
         let mut p = Pacer::default();
         assert_eq!(p.steps(), 1);
-        warmed(&mut p, 1.0);
+        for _ in 0..p.warmup - 1 {
+            p.observe(1, 1.0);
+        }
         assert_eq!(p.steps(), 1);
     }
 
+    /// The count settles at what the budget buys and then holds still, even though
+    /// every measurement is three frames old: a late sample still says what a step
+    /// costs.
     #[test]
-    fn ramps_up_while_under_budget_and_stops_at_the_cap() {
+    fn settles_without_oscillating_under_a_late_readback() {
+        let mut p = Pacer::default();
+        let cost = 0.4;
+        let counts = run(&mut p, 200, 3, |_| cost);
+        let tail = &counts[100..];
+        let (lo, hi) = (*tail.iter().min().unwrap(), *tail.iter().max().unwrap());
+        let expect = (p.target_ms / cost) as u32;
+        assert!(hi.abs_diff(expect) <= 3, "settled at {lo}..{hi}, expected about {expect}");
+        assert!(hi - lo <= 2, "the count saws between {lo} and {hi}");
+        assert!(tail.iter().all(|&s| s as f32 * cost <= p.target_ms * 1.15), "over budget in the tail");
+    }
+
+    /// One over-budget measurement cuts once. Nothing repeats it: the count does not
+    /// collapse to one because the same late sample kept arriving.
+    #[test]
+    fn a_cut_is_proportional_and_happens_once() {
+        let mut p = Pacer::default();
+        run(&mut p, 100, 2, |_| 0.4);
+        let settled = p.steps();
+        assert!(settled > 10, "{settled}");
+        // Steps suddenly cost twice as much: the count comes down toward half, and
+        // stays there.
+        p.observe(settled, settled as f32 * 0.8);
+        let after = p.steps();
+        assert!(after >= settled / 3 && after < settled, "{after} of {settled}");
+        // Cost stays doubled: a few more samples and it holds near half, not at one.
+        for _ in 0..10 {
+            let s = p.steps();
+            p.observe(s, s as f32 * 0.8);
+        }
+        assert!(p.steps() >= settled / 3, "collapsed to {}", p.steps());
+        assert!(p.steps() <= settled * 2 / 3 + 1, "{}", p.steps());
+    }
+
+    /// A cost that drifts across a quantisation edge — two steps fit, then just do
+    /// not, then do — must not flip the count back and forth: that is a speed that
+    /// halves and doubles every few frames.
+    #[test]
+    fn no_flip_flop_at_a_quantisation_edge() {
+        let mut p = Pacer::default();
+        let counts = run(&mut p, 400, 3, |f| if (f / 20) % 2 == 0 { 4.85 } else { 5.05 });
+        let tail = &counts[100..];
+        let changes = tail.windows(2).filter(|w| w[0] != w[1]).count();
+        assert!(changes <= 1, "the count changed {changes} times in the tail: {:?}", &tail[..40]);
+    }
+
+    #[test]
+    fn ramps_up_gently_and_stops_at_the_cap() {
         let mut p = Pacer { max_steps: 100, ..Default::default() };
-        warmed(&mut p, 1.0);
-        let before = p.steps();
-        p.observe(1.0);
-        assert!(p.steps() > before);
-        for _ in 0..2000 {
-            p.observe(1.0);
+        let counts = run(&mut p, 60, 1, |_| 0.001);
+        // Never more than half again per fresh sample.
+        for w in counts.windows(2) {
+            assert!(w[1] <= w[0] + (w[0] / 2).max(1), "{:?}", w);
         }
         assert_eq!(p.steps(), 100);
     }
 
     #[test]
-    fn cuts_back_in_proportion_when_over_budget() {
+    fn a_stall_and_a_bad_sample_do_not_move_the_count_much() {
         let mut p = Pacer::default();
-        warmed(&mut p, 1.0);
-        for _ in 0..200 {
-            p.observe(1.0);
-        }
-        let many = p.steps();
-        assert!(many > 50, "{many}");
-        // The frame suddenly costs four times the target: the count drops toward a
-        // quarter, never below one.
-        let slow = 4.0 * p.target_ms;
-        for _ in 0..40 {
-            p.observe(slow);
-        }
-        assert!(p.steps() < many / 3, "{} of {many}", p.steps());
-        for _ in 0..200 {
-            p.observe(1000.0);
-        }
-        assert_eq!(p.steps(), 1);
-    }
-
-    #[test]
-    fn holds_still_inside_the_dead_band() {
-        let mut p = Pacer::default();
-        let target = p.target_ms;
-        warmed(&mut p, target);
-        let held = p.steps();
-        let (high, low) = (p.target_ms + 0.5 * p.dead_ms, p.target_ms - 0.5 * p.dead_ms);
-        for _ in 0..50 {
-            p.observe(high);
-            p.observe(low);
-        }
-        assert_eq!(p.steps(), held);
-    }
-
-    #[test]
-    fn one_slow_frame_does_not_move_the_count() {
-        let mut p = Pacer::default();
-        warmed(&mut p, 1.0);
-        for _ in 0..100 {
-            p.observe(1.0);
-        }
+        run(&mut p, 100, 2, |_| 0.4);
         let before = p.steps();
-        p.observe(500.0);
-        // The stall is clipped before it is averaged: the count barely moves.
-        assert!(p.steps() >= before, "{} of {before}", p.steps());
-        assert!(!p.work_ms().is_nan());
-        p.observe(f32::NAN);
-        assert!(!p.work_ms().is_nan());
+        p.observe(before, 5000.0);
+        assert!(p.steps() >= before / 8, "{} of {before}", p.steps());
+        p.observe(before, f32::NAN);
+        p.observe(0, 1.0);
+        p.observe(before, -1.0);
+        assert!(!p.cost_ms().is_nan());
+        assert_eq!(p.work_ms(), p.steps() as f32 * p.cost_ms());
     }
 }

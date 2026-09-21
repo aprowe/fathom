@@ -6,7 +6,7 @@
 
 use serde_json::Value;
 
-use crate::app::{App, AppDescriptor, CommandCtx, DrawCtx, EventCtx, SetupCtx, UpdateCtx};
+use crate::app::{App, AppDescriptor, CommandCtx, DrawCtx, EventCtx, SetupCtx, UpdateCtx, WorkReport};
 use crate::camera::Camera;
 use crate::clock::{Clock, FrameStats};
 use crate::event::{InputEvent, MouseEvent};
@@ -259,7 +259,9 @@ impl<A: App> Runner<A> {
             self.app.update(&mut ctx);
             if !self.paused {
                 match reported {
-                    Some(ms) => self.pacer.observe(ms),
+                    Some(WorkReport::Measured { steps, ms }) => self.pacer.observe(steps, ms),
+                    // The app measures; its readback has not landed this frame.
+                    Some(WorkReport::Pending) => {}
                     // No measurement from the app: wait for the work and time that. Under
                     // vsync this reads as the frame period, so the pacer then holds at
                     // about a frame's worth of steps — safe, if not the whole budget.
@@ -267,7 +269,7 @@ impl<A: App> Runner<A> {
                     #[cfg(not(target_arch = "wasm32"))]
                     None => {
                         let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
-                        self.pacer.observe(started.elapsed().as_secs_f32() * 1000.0);
+                        self.pacer.observe(steps, started.elapsed().as_secs_f32() * 1000.0);
                     }
                     #[cfg(target_arch = "wasm32")]
                     None => {}

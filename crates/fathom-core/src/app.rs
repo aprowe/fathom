@@ -151,9 +151,9 @@ pub struct UpdateCtx<'a> {
     /// calls [`UpdateCtx::start_work`] just before it submits its steps, so only the
     /// steps are measured.
     pub work_started: &'a mut web_time::Instant,
-    /// The work time the app measured itself, if it did: see
-    /// [`UpdateCtx::report_work_ms`].
-    pub work_reported: &'a mut Option<f32>,
+    /// What the app measured itself, if it measures: see [`UpdateCtx::report_work`]
+    /// and [`UpdateCtx::report_work_pending`].
+    pub work_reported: &'a mut Option<WorkReport>,
     /// Seconds since setup, excluding paused time.
     pub time: f32,
     pub frame: u64,
@@ -169,13 +169,32 @@ impl UpdateCtx<'_> {
         *self.work_started = web_time::Instant::now();
     }
 
-    /// Hand the pacer a work time the app measured on the GPU — timestamp queries
-    /// around its steps, read back a frame later. Preferred over the runner's own
-    /// fence timing, which under vsync measures the frame period rather than the work;
-    /// when this is called the runner does not wait on the device at all.
-    pub fn report_work_ms(&mut self, ms: f32) {
-        *self.work_reported = Some(ms);
+    /// Hand the pacer a measurement the app made on the GPU — timestamp queries
+    /// around a batch of `steps` steps, read back some frames later, `ms` long.
+    /// Preferred over the runner's own fence timing, which under vsync measures the
+    /// frame period rather than the work; an app that reports never makes the runner
+    /// wait on the device. Report each measurement once: the pacer takes every call
+    /// as news.
+    pub fn report_work(&mut self, steps: u32, ms: f32) {
+        *self.work_reported = Some(WorkReport::Measured { steps, ms });
     }
+
+    /// The app measures its own work but nothing new has landed this frame: the
+    /// runner neither waits nor tells the pacer anything.
+    pub fn report_work_pending(&mut self) {
+        if self.work_reported.is_none() {
+            *self.work_reported = Some(WorkReport::Pending);
+        }
+    }
+}
+
+/// What an app that times its own GPU work has to say this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WorkReport {
+    /// A batch of `steps` steps took `ms` on the GPU.
+    Measured { steps: u32, ms: f32 },
+    /// A measurement is in flight; nothing to tell the pacer yet.
+    Pending,
 }
 
 /// Handed to [`App::draw`]. Record into `encoder`; the host handles present.
