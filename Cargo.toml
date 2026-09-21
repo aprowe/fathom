@@ -10,6 +10,7 @@ license = "MIT"
 [workspace.dependencies]
 fathom-core = { path = "crates/fathom-core" }
 fathom-shell = { path = "crates/fathom-shell" }
+fathom-components = { path = "crates/fathom-components" }
 gravity = { path = "apps/gravity" }
 ecp-life2 = { path = "apps/ecp-life2" }
 

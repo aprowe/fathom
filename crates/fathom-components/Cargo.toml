@@ -1,0 +1,10 @@
+[package]
+name = "fathom-components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The skin and the widgets fathom apps are built from: parameter rows, dial strips, instruments. No shell, no window: an egui Ui in, a parameter block edited."
+
+[dependencies]
+fathom-core = { workspace = true }
+eframe = { version = "0.36.1", default-features = false, features = ["wgpu", "default_fonts"] }

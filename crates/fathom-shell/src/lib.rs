@@ -14,11 +14,13 @@
 //! image. That is what keeps the app's `draw` unchanged: it still receives a target view
 //! and renders into it, exactly as it would if that view were a swapchain.
 
-pub mod control;
 pub mod files;
 pub mod hooks;
 pub mod presets;
-pub mod skin;
+
+/// The look and the widgets live in `fathom-components`; re-exported so an app that
+/// reached them through the shell keeps working.
+pub use fathom_components::{control, skin};
 
 use std::sync::Arc;
 
@@ -170,7 +172,7 @@ impl<A: ShellApp> Shell<A> {
     fn randomize(&mut self, ui: &egui::Ui) {
         let schema = self.runner.schema();
         for (index, def) in schema.iter().enumerate() {
-            if panel::is_locked(ui, def) {
+            if panel::is_locked_in(ui.ctx(), def) {
                 continue;
             }
             let u = self.random_unit();
@@ -840,28 +842,8 @@ mod panel {
         });
     }
 
-    /// Whether a parameter is held where it is: Randomize and presets leave a locked
-    /// control alone. Remembered by name, with the rest of the panel's state. A control
-    /// starts locked only if its definition says so: the ones that set up the experiment
-    /// rather than being part of it.
-    pub fn is_locked(ui: &egui::Ui, def: &ParamDef) -> bool {
-        is_locked_in(ui.ctx(), def)
-    }
-
     pub fn is_locked_in(ctx: &egui::Context, def: &ParamDef) -> bool {
-        let id = lock_id(def.name);
-        ctx.data_mut(|d| *d.get_persisted_mut_or(id, def.locked))
-    }
-
-    /// Keyed on the name alone, not off a `Ui`: the flag is read in the row's parent
-    /// `Ui` and written in a child, and `make_persistent_id` would give each its own key.
-    fn lock_id(name: &str) -> egui::Id {
-        egui::Id::new(("fathom-lock", name))
-    }
-
-    fn set_locked(ui: &egui::Ui, name: &str, locked: bool) {
-        let id = lock_id(name);
-        ui.data_mut(|d| d.insert_persisted(id, locked));
+        fathom_components::param::is_locked(ctx, def)
     }
 
     /// The preset picker, then the actions on one row: Save… names a copy into the
@@ -980,113 +962,9 @@ mod panel {
         ui.add_space(8.0);
     }
 
-    /// One parameter, drawn as whatever its kind calls for, with two things every kind
-    /// shares: a right-click puts it back to its default, and resting the pointer on it
-    /// shows what it does.
-    fn parameter<A: ShellApp>(
-        shell: &mut Shell<A>,
-        ui: &mut egui::Ui,
-        index: usize,
-        def: &ParamDef,
-    ) {
-        let locked = is_locked(ui, def);
-        let mut response = ui
-            .horizontal(|ui| {
-                if skin::padlock(ui, def.name, locked).clicked() {
-                    set_locked(ui, def.name, !locked);
-                }
-                ui.vertical(|ui| control_for(shell, ui, index, def));
-            })
-            .response;
-        if !ui.rect_contains_pointer(response.rect) {
-            return;
-        }
-        // egui reports only the topmost interactive widget as hovered, and over most of
-        // the row that is the control itself, so the row never counts as hovered and its
-        // tooltip would never show. The pointer is in the row: say so.
-        response.flags |= egui::response::Flags::HOVERED;
-        // Read from the raw pointer rather than the control's response: the control
-        // owns the primary button for dragging, and the reset must work anywhere on the
-        // row, label included.
-        if ui.input(|i| i.pointer.secondary_clicked()) {
-            shell.runner.params_mut().set_u32(index, def.default_word());
-        }
-        let default = match def.kind {
-            ParamKind::Float => control::format(def.default, def.min, def.max, def.step),
-            ParamKind::Int => format!("{}", def.default as u32),
-            ParamKind::Toggle => if def.default != 0.0 { "on".into() } else { "off".into() },
-            ParamKind::Choice => def.options.get(def.default as usize).copied().unwrap_or("?").into(),
-        };
-        response.on_hover_ui(|ui| {
-            ui.set_max_width(240.0);
-            if !def.description.is_empty() {
-                ui.label(egui::RichText::new(def.description).size(12.0).color(skin::TEXT));
-            }
-            let held = if locked { " · locked: kept through Randomize" } else { "" };
-            ui.label(
-                egui::RichText::new(format!("default {default} · right-click to reset{held}"))
-                    .size(11.0)
-                    .color(skin::MUTED),
-            );
-        });
-    }
-
-    fn control_for<A: ShellApp>(
-        shell: &mut Shell<A>,
-        ui: &mut egui::Ui,
-        index: usize,
-        def: &ParamDef,
-    ) {
-        let block = shell.runner.params_mut();
-        match def.kind {
-            ParamKind::Float | ParamKind::Int => {
-                let is_int = def.kind == ParamKind::Int;
-                let mut value = if is_int { block.u32(index) as f32 } else { block.f32(index) };
-                // An int is a float with a step of one everywhere except in storage, which
-                // is what lets both share a control.
-                let step = if is_int { 1.0 } else { def.step };
-                if skin::scrubber(ui, def.label, &mut value, def.min, def.max, step) {
-                    if is_int {
-                        block.set_u32(index, value.round() as u32);
-                    } else {
-                        block.set_f32(index, value);
-                    }
-                }
-            }
-            ParamKind::Toggle => {
-                let mut on = block.u32(index) != 0;
-                if skin::row(ui, def.label, |ui| skin::pill_toggle(ui, &mut on)) {
-                    block.set_u32(index, on as u32);
-                }
-            }
-            ParamKind::Choice => {
-                let current = block.u32(index) as usize;
-                if let Some(picked) = choice(ui, def.name, def.label, def.options, current) {
-                    shell.runner.params_mut().set_u32(index, picked as u32);
-                }
-            }
-        }
-    }
-
-    /// A one-of-N control, segmented if the options fit and a dropdown if they do not.
-    ///
-    /// Measured rather than guessed from the option count: "Classic | Well" fits in a
-    /// narrow panel and five presets named like sentences do not, and which is which
-    /// depends on how wide the panel has been dragged.
-    fn choice(
-        ui: &mut egui::Ui,
-        key: &str,
-        label: &str,
-        options: &[&'static str],
-        selected: usize,
-    ) -> Option<usize> {
-        let widths = skin::segment_widths(ui, options);
-        if control::segments_fit(&widths, 22.0, ui.available_width()) {
-            ui.label(egui::RichText::new(label).size(11.0).color(skin::MUTED));
-            skin::segmented(ui, key, options, selected)
-        } else {
-            skin::dropdown(ui, key, label, options, selected)
-        }
+    /// One parameter, drawn as whatever its kind calls for: see `fathom_components::param`.
+    fn parameter<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui, index: usize, def: &ParamDef) {
+        fathom_components::param::param_row(ui, def, index, shell.runner.params_mut());
     }
 
     /// A command's button, with its description on hover.
@@ -1111,7 +989,7 @@ mod panel {
                 continue;
             }
             let selected = shell.choice_of(def.name, def.initial as usize);
-            let mut scoped = ui.scope(|ui| choice(ui, def.name, def.label, def.options, selected));
+            let mut scoped = ui.scope(|ui| fathom_components::param::choice(ui, def.name, def.label, def.options, selected));
             if !def.description.is_empty() && ui.rect_contains_pointer(scoped.response.rect) {
                 // As for parameters: the segments underneath take the hover, so the row
                 // must claim it to get a tooltip.
