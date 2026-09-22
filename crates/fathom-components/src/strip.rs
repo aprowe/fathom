@@ -268,10 +268,36 @@ fn track(ui: &mut egui::Ui, def: &ParamDef, value: &mut f32, step: f32, mut band
     if response.drag_started() {
         grab = 0;
         if let (Some(p), Some((_, b, _))) = (response.interact_pointer_pos(), band.as_ref()) {
+            // The value thumb wins over a bracket: it is the thing a dial is for, and
+            // inside a narrow band it is always near one bracket or the other. A
+            // bracket is grabbed only when the press is on it and off the thumb.
+            let dv = (p.x - to_x(*value)).abs();
             let (dl, dh) = ((p.x - to_x(b.lo)).abs(), (p.x - to_x(b.hi)).abs());
-            grab = if dl < 9.0 && dl <= dh { 1 } else if dh < 9.0 { 2 } else { 0 };
+            grab = if dv <= 7.0 {
+                0
+            } else if dl < 7.0 && dl <= dh {
+                1
+            } else if dh < 7.0 {
+                2
+            } else {
+                0
+            };
         }
         ui.data_mut(|d| d.insert_temp(grab_id, grab));
+    }
+    // A plain click on the rail, off any bracket, sets the value there.
+    if response.clicked()
+        && !response.double_clicked()
+        && let Some(p) = response.interact_pointer_pos()
+    {
+        let on_bracket = band.as_ref().is_some_and(|(_, b, _)| (p.x - to_x(b.lo)).abs() < 7.0 || (p.x - to_x(b.hi)).abs() < 7.0);
+        if !on_bracket {
+            let next = control::quantize(to_v(p.x), def.min, def.max, step);
+            if next != *value {
+                *value = next;
+                changed = true;
+            }
+        }
     }
     if response.dragged()
         && let Some(p) = response.interact_pointer_pos()
@@ -327,7 +353,8 @@ fn track(ui: &mut egui::Ui, def: &ParamDef, value: &mut f32, step: f32, mut band
             painter.rect_filled(Rect::from_center_size(pos2(xl, cy), vec2(4.0, 14.0)), CornerRadius::same(1), *ink);
             painter.rect_filled(Rect::from_center_size(pos2(xh, cy), vec2(4.0, 14.0)), CornerRadius::same(1), *ink);
             painter.hline(xl..=xh, cy + 6.0, Stroke::new(1.0, *ink));
-            (1.0, skin::TEXT.gamma_multiply(0.7))
+            // The value thumb stays a real target inside the band.
+            (3.0, if lit { skin::TEXT } else { skin::TEXT.gamma_multiply(0.85) })
         }
         None => (3.0, if lit { skin::TEXT } else { skin::TEXT.gamma_multiply(0.85) }),
     };
