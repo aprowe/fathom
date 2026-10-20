@@ -60,6 +60,19 @@ pub trait ShellApp: App {
     /// A file dropped on the window, or chosen with Import…, that is not a preset for this
     /// app. Whatever the app makes of it is its business.
     fn file_received(&mut self, _name: &str, _bytes: &[u8], _ctx: &mut ShellCtx<'_>) {}
+
+    /// Whether the panel shows the tab or group of this name right now. A hidden one
+    /// drops out with every control in it; their values are kept, and saved in presets.
+    fn shows(&self, _tab_or_group: &str, _params: Params<'_>) -> bool {
+        true
+    }
+
+    /// Why the parameter or command of this name does nothing right now, if it does
+    /// nothing: the control is drawn greyed out, with the reason on hover. `None` leaves
+    /// it live.
+    fn disabled(&self, _name: &str, _params: Params<'_>) -> Option<&'static str> {
+        None
+    }
 }
 
 /// What every hook receives: the runner's state borrowed apart, the egui context, and a

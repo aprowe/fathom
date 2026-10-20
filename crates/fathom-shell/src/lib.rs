@@ -578,7 +578,11 @@ mod input {
             }
         }
 
-        // Keys are global: a shortcut should work wherever the pointer happens to be.
+        // Keys are global: a shortcut should work wherever the pointer happens to be,
+        // except while a text field has focus, when the keys are typing.
+        if ui.ctx().egui_wants_keyboard_input() {
+            return;
+        }
         let keys: Vec<String> = ui.input(|i| {
             i.events
                 .iter()
@@ -792,9 +796,11 @@ mod panel {
 
             // Tabs in declaration order. A control that names no tab goes on the first
             // one; an app that names none at all gets a single untabbed panel.
+            // Tabs and groups the app hides right now drop out.
+            let shows = |shell: &Shell<A>, name: &str| shell.runner.app().shows(name, fathom_core::Params::new(shell.runner.schema(), shell.runner.params()));
             let mut tabs: Vec<&'static str> = Vec::new();
             for t in descriptor.params.iter().map(|p| p.tab).chain(descriptor.commands.iter().map(|c| c.tab)) {
-                if !t.is_empty() && !tabs.contains(&t) {
+                if !t.is_empty() && !tabs.contains(&t) && shows(shell, t) {
                     tabs.push(t);
                 }
             }
@@ -822,6 +828,7 @@ mod panel {
                     groups.push(c.group);
                 }
             }
+            groups.retain(|g| shows(shell, g));
 
             for group in groups {
                 if !skin::group_header(ui, group, true) {
@@ -981,8 +988,28 @@ mod panel {
     }
 
     /// One parameter, drawn as whatever its kind calls for: see `fathom_components::param`.
+    /// Greyed out, with the app's reason on hover, while the app says it does nothing.
     fn parameter<A: ShellApp>(shell: &mut Shell<A>, ui: &mut egui::Ui, index: usize, def: &ParamDef) {
-        fathom_components::param::param_row(ui, def, index, shell.runner.params_mut());
+        let why = shell.runner.app().disabled(def.name, fathom_core::Params::new(shell.runner.schema(), shell.runner.params()));
+        let response = ui
+            .add_enabled_ui(why.is_none(), |ui| fathom_components::param::param_row(ui, def, index, shell.runner.params_mut()))
+            .response;
+        if let Some(why) = why {
+            response.on_disabled_hover_text(why);
+        }
+    }
+
+    /// As [`parameter`], for a command's button.
+    fn live_command_button<A: ShellApp>(shell: &Shell<A>, ui: &mut egui::Ui, def: &fathom_core::CommandDef) -> bool {
+        let why = shell.runner.app().disabled(def.name, fathom_core::Params::new(shell.runner.schema(), shell.runner.params()));
+        let response = ui.add_enabled_ui(why.is_none(), |ui| command_button(ui, def)).inner;
+        match why {
+            Some(why) => {
+                response.on_disabled_hover_text(why);
+                false
+            }
+            None => response.clicked(),
+        }
     }
 
     /// A command's button, with its description on hover.
@@ -1029,7 +1056,7 @@ mod panel {
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 for def in buttons {
-                    if command_button(ui, def).clicked() {
+                    if live_command_button(shell, ui, def) {
                         shell.dispatch(def.name, serde_json::json!({}));
                     }
                 }
