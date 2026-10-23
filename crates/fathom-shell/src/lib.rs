@@ -777,29 +777,37 @@ mod panel {
             if descriptor.presets_section {
                 preset_section(shell, ui);
             }
+            let egui = ui.ctx().clone();
+            shell.hook(&egui, |app, ctx| app.panel_top(ui, ctx));
             // Randomize, then the app's pinned buttons: the actions reached for
             // constantly, so they are on every tab.
-            ui.horizontal_wrapped(|ui| {
-                if skin::action(ui, "Randomize")
-                    .on_hover_text("Roll every unlocked parameter. Click a padlock to keep one where it is.")
-                    .clicked()
-                {
-                    shell.randomize(ui.ctx());
-                }
-                for def in descriptor.commands.iter().filter(|c| c.pinned && c.options.is_empty()) {
-                    if command_button(ui, def).clicked() {
-                        shell.dispatch(def.name, serde_json::json!({}));
+            let shows = |shell: &Shell<A>, name: &str| shell.runner.app().shows(name, fathom_core::Params::new(shell.runner.schema(), shell.runner.params()));
+            let randomize = shows(shell, "fathom.randomize");
+            let pinned: Vec<_> = descriptor.commands.iter().filter(|c| c.pinned && c.options.is_empty()).collect();
+            if randomize || !pinned.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    if randomize
+                        && skin::action(ui, "Randomize")
+                            .on_hover_text("Roll every unlocked parameter. Click a padlock to keep one where it is.")
+                            .clicked()
+                    {
+                        shell.randomize(ui.ctx());
                     }
-                }
-            });
-            ui.add_space(8.0);
+                    for def in &pinned {
+                        if command_button(ui, def).clicked() {
+                            shell.dispatch(def.name, serde_json::json!({}));
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+            }
 
             // Tabs in declaration order. A control that names no tab goes on the first
             // one; an app that names none at all gets a single untabbed panel.
-            // Tabs and groups the app hides right now drop out.
-            let shows = |shell: &Shell<A>, name: &str| shell.runner.app().shows(name, fathom_core::Params::new(shell.runner.schema(), shell.runner.params()));
+            // Tabs and groups the app hides right now drop out; the app's own come last.
+            let own = shell.runner.app().tabs();
             let mut tabs: Vec<&'static str> = Vec::new();
-            for t in descriptor.params.iter().map(|p| p.tab).chain(descriptor.commands.iter().map(|c| c.tab)) {
+            for t in descriptor.params.iter().map(|p| p.tab).chain(descriptor.commands.iter().map(|c| c.tab)).chain(own.iter().copied()) {
                 if !t.is_empty() && !tabs.contains(&t) && shows(shell, t) {
                     tabs.push(t);
                 }
@@ -814,6 +822,7 @@ mod panel {
                 ui.add_space(8.0);
             }
             let on_tab = |t: &'static str| tabs.is_empty() || t == tabs[current] || (t.is_empty() && current == 0);
+            shell.controls.tab = tabs.get(current).copied().unwrap_or("");
 
             // Groups in declaration order, parameters before the commands filed under the
             // same heading.

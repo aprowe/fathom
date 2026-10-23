@@ -26,6 +26,16 @@ pub trait ShellApp: App {
     /// `Ui` inside the panel's scroll area: any widget goes.
     fn panel(&mut self, _ui: &mut egui::Ui, _ctx: &mut ShellCtx<'_>) {}
 
+    /// Draw into the controls panel just under the Presets section, above the tabs: for
+    /// whatever belongs to no tab and should be reachable from every one.
+    fn panel_top(&mut self, _ui: &mut egui::Ui, _ctx: &mut ShellCtx<'_>) {}
+
+    /// Tabs of the app's own, after the ones its parameters and commands name. Nothing
+    /// generated goes on them: [`ShellApp::panel`] fills them, by [`Controls::tab`].
+    fn tabs(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Lay the window out, when the descriptor asks for `custom_chrome`: called before
     /// the canvas with the root `Ui`, so the app adds its own `egui::Panel`s around it
     /// and the canvas takes what is left. The shell draws nothing else. The pieces the
@@ -63,6 +73,7 @@ pub trait ShellApp: App {
 
     /// Whether the panel shows the tab or group of this name right now. A hidden one
     /// drops out with every control in it; their values are kept, and saved in presets.
+    /// `fathom.randomize` is the Randomize button.
     fn shows(&self, _tab_or_group: &str, _params: Params<'_>) -> bool {
         true
     }
@@ -139,6 +150,7 @@ pub struct Controls {
     pub(crate) panel_width: f32,
     pub(crate) drawer_open: bool,
     pub(crate) status: String,
+    pub(crate) tab: &'static str,
     /// The name of the preset last loaded or saved, and the text a Save… field edits.
     /// Public so a custom chrome can hand it to the preset picker.
     pub preset_name: String,
@@ -186,6 +198,12 @@ impl Controls {
 
     pub fn panel_width(&self) -> f32 {
         self.panel_width
+    }
+
+    /// The panel tab on show, so [`ShellApp::panel`] can draw for one tab only; empty
+    /// for a panel without tabs. A tab exists while some parameter or command names it.
+    pub fn tab(&self) -> &'static str {
+        self.tab
     }
 
     /// Show the Export… dialog: the OS's natively, a download on the web.
